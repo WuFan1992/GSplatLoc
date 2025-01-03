@@ -1,0 +1,31 @@
+.DS_Store
+*.pyc
+.vscode
+output
+build
+diff_rasterization/diff_rast.egg-info
+diff_rasterization/dist
+tensorboard_3d
+screenshots
+*.ckpt
+*.pth
+*.jpg
+reconstruction
+viz
+*.gif
+
+# Dataset files.
+datasets/7scenes_*
+datasets/12scenes_*
+datasets/Cambridge_*
+datasets/pgt_*
+datasets/visloc_pseudo_gt_limitations
+datasets/_*
+7scenes_source/
+7scenes_sources/
+pgt_7scenes_chess/
+visloc_pseudo_gt_limitations/
+
+#Build Files
+submodules/diff-gaussian-rasterization/build/
+submodules/simple-knn/build/
