@@ -48,11 +48,11 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
 
         gaussian_pcd = gaussians.get_xyz
         gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
-            
+    
         for _, view in enumerate(tqdm(views, desc="Rendering progress")):
             
             gt_im = view.original_image[0:3, :, :]
-            
+
             # Extract sparse features
             gt_keypoints, _, gt_feature = xfeat.detectAndCompute(gt_im[None], 
                                                                  top_k=args.top_k)[0].values()
@@ -161,8 +161,9 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
                         
             print(f"Processed: {view.uid}")            
         
-        log_errors(model_path, name, prior_rErr, prior_tErr, f"prior")
-        log_errors(model_path, name, rErrs, tErrs, "warp")
+        #////////////////////////////////////////////////////////
+        #log_errors(model_path, name, prior_rErr, prior_tErr, f"prior")
+        #log_errors(model_path, name, rErrs, tErrs, "warp")
         
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 
@@ -171,7 +172,9 @@ def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args):
     scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False)
     bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-    localize_set(dataset.model_path, "test", scene.getTestCameras(), gaussians, pipeline, background, args)
+    #///////////////////////////////
+    #localize_set(dataset.model_path, "test", scene.getTestCameras(), gaussians, pipeline, background, args)
+    localize_set(dataset.model_path, "test", scene.getTrainCameras(), gaussians, pipeline, background, args)
 
 
 if __name__ == "__main__":

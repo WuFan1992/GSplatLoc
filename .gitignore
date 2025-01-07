@@ -13,6 +13,7 @@ screenshots
 reconstruction
 viz
 *.gif
+output/
 
 # Dataset files.
 datasets/7scenes_*
@@ -21,6 +22,8 @@ datasets/Cambridge_*
 datasets/pgt_*
 datasets/visloc_pseudo_gt_limitations
 datasets/_*
+datasets/images/
+datasets/sparse/
 7scenes_source/
 7scenes_sources/
 pgt_7scenes_chess/

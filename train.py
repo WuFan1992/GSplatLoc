@@ -33,12 +33,17 @@ from models.networks import CNN_decoder
 from models.semantic_dataloader import VariableSizeDataset
 from torch.utils.data import DataLoader
 
+#/////////////////////////
+import matplotlib.pyplot as plt
+import numpy as np
+#////////////////////////
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
-
+    
     # 2D semantic feature map CNN decoder
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
@@ -69,6 +74,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
 
+    #///////////////////////////////////
+    
+    ones = 0.7*torch.ones(60,80).numpy()
+    zeros = torch.zeros(60,80).numpy()
+    #print("ones = ", ones)
+    #print("zeros = ", zeros)
+    #plt.imsave(f"./output/each_channel_feature_map/residual/ones.png",ones , cmap='gray')
+    #plt.imsave(f"./output/each_channel_feature_map/residual/zeros.png",zeros , cmap='gray')
+    
+    #/////////////////////////////////
 
     for iteration in range(first_iter, opt.iterations + 1):
 
@@ -92,7 +107,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
 
         feature_map, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -106,6 +120,28 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         loss.backward()
         iter_end.record()
+        
+        #///////////////////////////////////////////
+        if not iteration % 50:
+            viewpoint_stack_0 = scene.getTrainCameras().copy()
+            viewpoint_cam_0 = viewpoint_stack_0[0]
+            gt_feature_map_0 = viewpoint_cam_0.semantic_feature 
+            render_pkg_0 = render(viewpoint_cam_0, gaussians, pipe, background)
+            feature_map_0 = render_pkg_0["feature_map"]
+            feature_map_0 = F.interpolate(feature_map_0.unsqueeze(0), size=(gt_feature_map_0.shape[1], gt_feature_map_0.shape[2]), mode='bilinear', align_corners=True).squeeze(0)
+            #gt_feature_map_0 = F.interpolate(gt_feature_map_0.unsqueeze(0), size=(feature_map_0.shape[1], feature_map_0.shape[2]), mode='bilinear', align_corners=True).squeeze(0)
+            layer_feature_map = feature_map_0.to("cpu")
+            gt_layer_feature_map = gt_feature_map_0.to("cpu")
+
+            layer_loss = l1_loss(feature_map_0, gt_feature_map_0).to("cpu") 
+            residual_feature = torch.abs(gt_feature_map_0 - feature_map_0).to("cpu").mean(0).detach().numpy()
+
+            plt.imsave(f"./output/each_channel_feature_map/residual/{iteration}_{layer_loss}.png",residual_feature , cmap='gray')
+            
+        
+        
+        #//////////////////////////////////////////
+        
 
         with torch.no_grad():
             # Progress bar
