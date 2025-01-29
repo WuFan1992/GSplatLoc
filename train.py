@@ -36,6 +36,7 @@ from torch.utils.data import DataLoader
 #/////////////////////////
 import matplotlib.pyplot as plt
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 #////////////////////////
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
@@ -63,7 +64,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
 
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    bg_color = [1]*64 if dataset.white_background else [0]*64
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     iter_start = torch.cuda.Event(enable_timing = True)
@@ -74,16 +75,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
 
-    #///////////////////////////////////
-    
-    ones = 0.7*torch.ones(60,80).numpy()
-    zeros = torch.zeros(60,80).numpy()
-    #print("ones = ", ones)
-    #print("zeros = ", zeros)
-    #plt.imsave(f"./output/each_channel_feature_map/residual/ones.png",ones , cmap='gray')
-    #plt.imsave(f"./output/each_channel_feature_map/residual/zeros.png",zeros , cmap='gray')
-    
-    #/////////////////////////////////
 
     for iteration in range(first_iter, opt.iterations + 1):
 
@@ -111,34 +102,40 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        gt_feature_map = viewpoint_cam.semantic_feature.cuda()
-        feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) 
+        gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
+
+        feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
         if dataset.speedup:
             feature_map = cnn_decoder(feature_map)
         Ll1_feature = l1_loss(feature_map, gt_feature_map) 
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + 1.0 * Ll1_feature 
-
+        
         loss.backward()
         iter_end.record()
         
         #///////////////////////////////////////////
         if not iteration % 50:
-            viewpoint_stack_0 = scene.getTrainCameras().copy()
-            viewpoint_cam_0 = viewpoint_stack_0[0]
-            gt_feature_map_0 = viewpoint_cam_0.semantic_feature 
-            render_pkg_0 = render(viewpoint_cam_0, gaussians, pipe, background)
-            feature_map_0 = render_pkg_0["feature_map"]
-            feature_map_0 = F.interpolate(feature_map_0.unsqueeze(0), size=(gt_feature_map_0.shape[1], gt_feature_map_0.shape[2]), mode='bilinear', align_corners=True).squeeze(0)
-            #gt_feature_map_0 = F.interpolate(gt_feature_map_0.unsqueeze(0), size=(feature_map_0.shape[1], feature_map_0.shape[2]), mode='bilinear', align_corners=True).squeeze(0)
-            layer_feature_map = feature_map_0.to("cpu")
-            gt_layer_feature_map = gt_feature_map_0.to("cpu")
+            with torch.no_grad():
+                viewpoint_stack_0 = scene.getTrainCameras().copy()
+                viewpoint_cam_0 = viewpoint_stack_0[235]
+                print("image name = ", viewpoint_cam_0.image_name)
+                gt_feature_map_0 = viewpoint_cam_0.semantic_feature 
+                render_pkg_0 = render(viewpoint_cam_0, gaussians, pipe, background)
+                feature_map_0 = render_pkg_0["feature_map"]
+            #feature_map_0 = F.interpolate(feature_map_0.unsqueeze(0), size=(gt_feature_map_0.shape[1], gt_feature_map_0.shape[2]), mode='bilinear', align_corners=True).squeeze(0)
+                gt_feature_map_0 = F.interpolate(gt_feature_map_0.unsqueeze(0), size=(feature_map_0.shape[1], feature_map_0.shape[2]), mode='bilinear', align_corners=True).squeeze(0)
+                layer_loss = l1_loss(feature_map_0, gt_feature_map_0) 
+                if tb_writer:
+                    tb_writer.add_scalar('train_loss_patches/residual_error', layer_loss.item(), iteration)
+                residual_feature = torch.abs(gt_feature_map_0 - feature_map_0).to("cpu").mean(0).detach().numpy()
+                plt.imsave(scene.model_path + f"each_channel_feature_map/residual/{iteration}_{layer_loss}.png",residual_feature , cmap='gray')
+                del viewpoint_stack_0
+                del viewpoint_cam_0
+                del gt_feature_map_0
+                del render_pkg_0
+                del feature_map_0
+                del residual_feature
 
-            layer_loss = l1_loss(feature_map_0, gt_feature_map_0).to("cpu") 
-            residual_feature = torch.abs(gt_feature_map_0 - feature_map_0).to("cpu").mean(0).detach().numpy()
-
-            plt.imsave(f"./output/each_channel_feature_map/residual/{iteration}_{layer_loss}.png",residual_feature , cmap='gray')
-            
-        
         
         #//////////////////////////////////////////
         
@@ -211,8 +208,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 except Exception as e:
                     # raise e
                     network_gui.conn = None
-            
-
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
