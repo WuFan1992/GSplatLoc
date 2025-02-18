@@ -90,22 +90,24 @@ class _RasterizeGaussians(torch.autograd.Function):
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
                 # num_rendered, color, feature_map, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args) #############
-                num_rendered, color, feature_map, depth, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args)
+                num_rendered, color, feature_map, depth, radii, geomBuffer, binningBuffer, imgBuffer, points_in_render_image  = _C.rasterize_gaussians(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw.dump")
                 print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
                 raise ex
         else:
             # num_rendered, color, feature_map, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args) ###############
-            num_rendered, color, feature_map, depth, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args) ###d
-
+            num_rendered, color, feature_map, depth, radii, geomBuffer, binningBuffer, imgBuffer, points_in_render_image = _C.rasterize_gaussians(*args) ###d
+        
+        #**************Fan WU***************
+        
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         # ctx.save_for_backward(colors_precomp, semantic_feature, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer) ###
-        ctx.save_for_backward(colors_precomp, semantic_feature, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer) ###d
+        ctx.save_for_backward(colors_precomp, semantic_feature,means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer) ###d
         # return color, feature_map, radii ###
-        return color, feature_map, radii, depth
+        return color, feature_map, radii , depth, points_in_render_image
 
     @staticmethod
     ### def backward(ctx, grad_out_color, _):

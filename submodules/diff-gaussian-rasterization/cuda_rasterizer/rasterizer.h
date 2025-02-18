@@ -15,6 +15,7 @@
 #include <vector>
 #include <functional>
 
+
 namespace CudaRasterizer
 {
 	class Rasterizer
@@ -52,6 +53,7 @@ namespace CudaRasterizer
 			float* out_color,
 			float* out_feature_map,
 			float* out_depth,
+			float* points_in_render_images,
 			int* radii = nullptr,
 			bool debug = false
 			);
