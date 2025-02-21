@@ -53,7 +53,6 @@ def getOrigPoint(point_in_render_img, W, H, ProjMatrix):
     p_hom = np.array([p_hom_x, p_hom_y, p_hom_z,p_hom_w])
     origP = np.matmul(p_hom, np.linalg.inv(ProjMatrix), dtype=np.float32)
     origP = origP[:3]
-    print("ori = ", point_in_render_img[4], point_in_render_img[5],  point_in_render_img[6] )
     return origP
 
 def getAllOrigPoints(points_in_render_img, W,H,ProjMatrix):
@@ -142,6 +141,34 @@ def pixel_to_world(u, v, depth, K, R, t):
 
 
 
+def find_2d2d_correspondences(query_keypoints, query_feature, proj_feature, proj_keypoints, chunk_size=10000):
+    
+    f_N, feat_dim = query_feature.shape
+    P_N = proj_feature.shape[0]
+    
+    # Normalize features for faster cosine similarity computation
+    query_feature = F.normalize(query_feature, p=2, dim=1)
+    proj_feature = F.normalize(proj_feature, p=2, dim=1)
+    
+    max_similarity = torch.full((f_N,), -float('inf'), device="cuda")
+    max_indices = torch.zeros(f_N, dtype=torch.long, device="cuda")
+    
+    for part in range(0, P_N, chunk_size):
+        chunk = proj_feature[part:part + chunk_size]
+        # Use matrix multiplication for faster similarity computation
+        similarity = torch.mm(query_feature, chunk.t())
+        
+        chunk_max, chunk_indices = similarity.max(dim=1)
+        
+        update_mask = chunk_max > max_similarity
+        max_similarity[update_mask] = chunk_max[update_mask]
+        max_indices[update_mask] = chunk_indices[update_mask] + part
+
+    point_vis = proj_keypoints[max_indices].cpu().numpy().astype(np.float32)
+    keypoints_matched = query_keypoints[..., :2].cpu().numpy().astype(np.float32)
+    
+    return point_vis, keypoints_matched
+
 def getIntrinsic(view):
     K = np.eye(3)
     focal_length = fov2focal(view.FoVx, view.image_width)
@@ -161,7 +188,27 @@ def getWorldCoordinates(list_pixels, list_depth, K, R, t):
     return output
         
         
-
+"""
+        
+def find_query_ref_feature_matching(query_keypoints, query_feature, proj_feature, proj_keypoints):
+    #reshape the proj_featur from 64x48x64 to 3720x64
+    proj_feature = torch.reshape(proj_feature, (3720,64))
+    print("reshape feature size = ", proj_feature.shape)
+    
+    #Normalization
+    proj_feature = F.normalize(proj_feature, p=2, dim=1)
+    query_feature = F.normalize(query_feature, p=2, dim=1)
+    
+    #Cosine similarity 
+    q_N, feat_dim = query_feature.shape
+    max_similarity = torch.full((q_N,), -float('inf'), device=device)
+    max_indices = torch.zeros(q_N, dtype=torch.long, device=device)
+    
+    similarity = torch.mm(proj_feature, query_feature.t())
+    max_value, max_indices = similarity.max(dim=1)
+    
+    
+ """   
         
     
 
@@ -187,8 +234,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     img_dir = "./datasets/images/"
     query_img_name = "frame-000005.color.png"
     query_img_name_noext = "frame-000005"
-    ref_img_name_noext = "frame-000005"
-    ref_img_name = "frame-000005.color.png"
+    ref_img_name_noext = "frame-000065"
+    ref_img_name = "frame-000065.color.png"
 
     query_img_path = os.path.join(img_dir, query_img_name)
     query_img = cv2.imread(query_img_path) # [H,W,C] = [480,640,3]
@@ -200,7 +247,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     ref_img = cv2.imread(ref_img_path)
     tensor_ref_img = xfeat.parse_input(ref_img) # [1,C,H,W] = [1,3,480,640]
     ref_keypoints, _, ref_feature = xfeat.detectAndCompute(tensor_ref_img, 
-                                                                 top_k=25)[0].values()  
+                                                                 top_k=4096)[0].values()  
     #====================================
     # Get the reference img pose
 
@@ -208,13 +255,12 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     # Extract sparse features
     tensor_query_img = xfeat.parse_input(query_img) # [1,C,H,W] = [1,3,480,640]
     query_keypoints, _, query_feature = xfeat.detectAndCompute(tensor_query_img, 
-                                                                 top_k=25)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
+                                                                 top_k=4096)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
     # Get the reference img pose
     ref = [ view for view in views if view.image_name == ref_img_name_noext]
     que = [ view for view in views if view.image_name == query_img_name_noext]
     # Get the reference R and t
     K_ref, K_query = getIntrinsic(ref[0]), getIntrinsic(que[0])
-    print("K_key = ", K_query)
     
     render_pkg = render(ref[0], gaussians, pipeline, background)
     
@@ -224,45 +270,81 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     #-------------------------------------------------#
     feature_map, points_in_render_image,  depth_map = render_pkg["feature_map"], render_pkg["points_in_render_images"], render_pkg["depth"] 
     
-
+    #feature_map = F.interpolate(feature_map.unsqueeze(0), size=(60, 80), mode='bilinear', align_corners=True).squeeze(0) #640x480
+    #loss = l1_loss(feature_map, que[0].semantic_feature)
+    #print("l1 loss = ", loss)
 
     # Get the proj pixel 
     points_x, points_y, points_z, pw = points_in_render_image[0].tolist(), points_in_render_image[1].tolist(), points_in_render_image[2].tolist(), points_in_render_image[3].tolist()
-    X,Y,Z = points_in_render_image[4].tolist(), points_in_render_image[5].tolist(), points_in_render_image[6].tolist()
-    points_xyzw = [(x, y, z, w, xx,yy,zz) for x,y,z,w,xx,yy,zz in zip(points_x, points_y, points_z, pw, X,Y,Z)]
+    points_xyzw = [(x, y, z, w) for x,y,z,w in zip(points_x, points_y, points_z, pw)]
     proj_p_number = len(points_x) - points_x.count(-1)
     proj_p_feature = torch.zeros(proj_p_number, 64)
-    proj_p_xyzw = torch.zeros(proj_p_number,7)
+    proj_p_xyzw = torch.zeros(proj_p_number,4)
     index = 0
     
-  
+    """
+    for xyzw in points_in_render_image.T:
+        if index > 499:
+            break
+        p_x, p_y = xyzw[0].item(), xyzw[1].item()
+        if p_x < 480 and p_y < 640 and p_x > 0 and p_y > 0:
+            proj_p_feature[index] = feature_map[:,int(xyzw[0]), int(xyzw[1])]  # feature map = [C, H, W], x-->W,  y-->H
+            print(index)
+            index = index + 1
+            
+    """
     
     for xyzw in points_xyzw:
         if xyzw[0] !=-1 and xyzw[1] != -1 and xyzw[0] < 480 and xyzw[1] < 640 and xyzw[0]>0 and xyzw[1]>0:
             proj_p_feature[index] = feature_map[:,int(xyzw[0]), int(xyzw[1])]
             proj_p_xyzw[index, 0], proj_p_xyzw[index, 1], proj_p_xyzw[index, 2], proj_p_xyzw[index, 3] = xyzw[1], xyzw[0], xyzw[2], xyzw[3]
-            proj_p_xyzw[index, 4], proj_p_xyzw[index, 5], proj_p_xyzw[index, 6] = xyzw[4], xyzw[5], xyzw[6]
             index = index + 1      
           
+    """
+    #get the validate point number
+    points_x , points_y= points_in_render_image[0].tolist(), points_in_render_image[1].tolist()
+    points_xy = [(x, y) for x,y in zip(points_x, points_y)]
+    proj_p_number = len(points_x) - points_x.count(-1)
+    proj_p_feature = torch.zeros(proj_p_number, 64)
+    proj_p_xy = torch.zeros(proj_p_number, 2)
+    #update the proj_p_feature (this take almost 1 min)
+    index = 0
+    for xy in points_xy:
+        if xy[0] !=-1 and xy[1] != -1 and xy[0] < 480 and xy[1] < 640 and xy[0]>0 and xy[1]>0:
+            proj_p_feature[index] = feature_map[:,int(xy[0]), int(xy[1])]
+            proj_p_xy[index, 0], proj_p_xy[index, 1] = xy[1], xy[0]
+            index = index + 1
+    """
+
+    #proj_points_match, query_points_match = find_2d2d_correspondences(query_keypoints, query_feature, proj_p_feature.to("cuda"), proj_p_xy.to("cuda"))
+    ############## Visualize the matching ########################
     idxs0, idxs1 = xfeat.match(query_feature.to("cpu"), proj_p_feature, min_cossim=0.82 )
     mkpts_0, mkpts_1 = query_keypoints[idxs0].cpu().numpy(), proj_p_xyzw[idxs1].cpu().numpy()
 
     
     canvas, query_points_valid, proj_points_valid = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
-    
 
 
     
-
-    #match_3d = getAllOrigPoints(proj_points_valid, 640,480, ref[0].full_proj_transform.to("cpu"))
-    match_3d = []
-    for hello in proj_points_valid:
-        match_3d.append([hello[4], hello[5], hello[6]])
-    print("match_3d = ", match_3d)
-    print("query point valid = ", query_points_valid)
-    print("proj point valid = ", proj_points_valid)
+    #plt.figure(figsize=(12,12))
+    #plt.imshow(canvas[..., ::-1]), plt.show()
     
-    _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(getXY(proj_points_valid)), 
+    
+    ##############################################################
+    
+    
+    """
+    proj_depth_match = torch.zeros(len(proj_points_valid), 1)
+    index = 0
+    for xy in proj_points_valid:
+        proj_depth_match[index] = depth_map[:,int(xy[1]), int(xy[0])]
+        index = index + 1
+    """
+
+    match_3d = getAllOrigPoints(proj_points_valid, 640,480, ref[0].full_proj_transform.to("cpu"))
+    #match_3d = getWorldCoordinates(proj_points_valid, proj_depth_match, torch.from_numpy(K_query), torch.from_numpy(ref[0].R), torch.from_numpy(ref[0].T))
+
+    _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
                                                   K_query, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
@@ -281,7 +363,130 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     plt.figure(figsize=(12,12))
     plt.imshow(canvas[..., ::-1]), plt.show()
     
+    #F, mask = cv2.findFundamentalMat(proj_points_match,query_points_match,cv2.FM_8POINT)
+    #E = np.transpose(K_ref) @ F @ K_query
     
+        
+        
+    
+    
+    """
+        for _, view in enumerate(tqdm(views, desc="Rendering progress")):
+            
+            gt_im = view.original_image[0:3, :, :]
+
+            # Extract sparse features
+            gt_keypoints, _, gt_feature = xfeat.detectAndCompute(gt_im[None], 
+                                                                 top_k=args.top_k)[0].values()
+
+            # Define intrinsic matrix
+            K = np.eye(3)
+            focal_length = fov2focal(view.FoVx, view.image_width)
+            K[0, 0] = K[1, 1] = focal_length
+            K[0, 2] = view.image_width / 2
+            K[1, 2] = view.image_height / 2
+
+            start = time.time()
+
+            # Find initial pose prior via 2D-3D matching
+            with torch.no_grad():
+                matched_3d, matched_2d = find_2d3d_correspondences(
+                    gt_keypoints,
+                    gt_feature,
+                    gaussian_pcd,
+                    gaussian_feat
+                )
+
+            gt_R = view.R
+            gt_t = view.T
+
+            print(f"Match speed: {time.time() - start}")
+            _, R, t, _ = cv2.solvePnPRansac(matched_3d, matched_2d, 
+                                                  K, 
+                                                  distCoeffs=None, 
+                                                  flags=cv2.SOLVEPNP_ITERATIVE, 
+                                                  iterationsCount=args.ransac_iters
+                                                  )
+            
+            R, _ = cv2.Rodrigues(R)            
+
+            # Calculate the rotation and translation errors using existing function
+            rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
+
+            # Print the errors
+            print(f"Rotation Error: {rotError} deg")
+            print(f"Translation Error: {transError} cm")
+
+            prior_rErr.append(rotError)
+            prior_tErr.append(transError)
+
+            w2c = torch.eye(4, 4, device='cuda')
+            w2c[:3, :3] = torch.from_numpy(R).float()
+            w2c[:3, 3] = torch.from_numpy(t[:, 0]).float()
+            
+            # Update the view's pose
+            view.update_RT(R.T, t[:,0])
+            
+            # Render from the current estimated pose
+            with torch.no_grad():
+                render_pkg = render(view, gaussians, pipeline, background)
+            
+            render_im = render_pkg["render"]
+            depth = render_pkg["depth"]
+
+            quat_opt = rotmat2qvec_tensor(w2c[:3, :3].clone()).view([4]).to(w2c.device)
+            t_opt = w2c[:3, 3].clone()
+
+            optimizer = optim.Adam([quat_opt.requires_grad_(True), 
+                                    t_opt.requires_grad_(True)], lr=args.warp_lr)
+
+
+            for i in range(args.warp_iters):                    
+                    
+                # Compute warp loss for optimizing w2c_opt
+                optimizer.zero_grad()
+       
+                loss = compute_warping_loss(vr=render_im,
+                                            qr=gt_im,
+                                            quat_opt=quat_opt,
+                                            t_opt=t_opt,
+                                            pose=w2c,
+                                            K=torch.from_numpy(K).float().to('cuda'),
+                                            depth=depth) 
+        
+                loss.backward()
+                optimizer.step()
+                
+                if i % (args.warp_iters // 5) == 0:
+                    print(f"Iteration {i}, Loss: {loss.item():.4f}")
+                    
+                    # After optimization, update the view's pose
+                    R_est = qvec2rotmat_tensor(quat_opt).detach().cpu().numpy()
+                    t_est = t_opt.detach().cpu().numpy()
+
+                    # Compute final errors
+                    rotError, transError = calculate_pose_errors(gt_R, gt_t, R_est.T, t_est.reshape(3,1))
+
+                    print(f"Iteration {i} Rotation Error: {rotError:.2f} deg, Translation Error: {transError:.2f} cm")
+                
+            # After optimization, update the view's pose
+            R_est = qvec2rotmat_tensor(quat_opt).detach().cpu().numpy()
+            t_est = t_opt.detach().cpu().numpy()
+            
+            # Compute final errors
+            rotError, transError = calculate_pose_errors(gt_R, gt_t, R_est.T, t_est.reshape(3,1))
+
+            print(f"Final Rotation Error: {rotError:.2f} deg, Translation Error: {transError:.2f} cm")
+            
+            rErrs.append(rotError)
+            tErrs.append(transError)
+                        
+            print(f"Processed: {view.uid}")            
+        
+        #////////////////////////////////////////////////////////
+        #log_errors(model_path, name, prior_rErr, prior_tErr, f"prior")
+        #log_errors(model_path, name, rErrs, tErrs, "warp")
+    """    
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 
     gaussians = GaussianModel(dataset.sh_degree)

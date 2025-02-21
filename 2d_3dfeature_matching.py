@@ -13,8 +13,6 @@ from torchvision.transforms import PILToTensor
 ##############################
 
 
-from utils.loss_utils import l1_loss
-
 from scene import Scene
 from tqdm import tqdm
 from gaussian_renderer import render
@@ -53,7 +51,6 @@ def getOrigPoint(point_in_render_img, W, H, ProjMatrix):
     p_hom = np.array([p_hom_x, p_hom_y, p_hom_z,p_hom_w])
     origP = np.matmul(p_hom, np.linalg.inv(ProjMatrix), dtype=np.float32)
     origP = origP[:3]
-    print("ori = ", point_in_render_img[4], point_in_render_img[5],  point_in_render_img[6] )
     return origP
 
 def getAllOrigPoints(points_in_render_img, W,H,ProjMatrix):
@@ -150,23 +147,34 @@ def getIntrinsic(view):
     K[1, 2] = view.image_height / 2
     return K
 
-
-def getWorldCoordinates(list_pixels, list_depth, K, R, t):
-    P_N = len(list_pixels)
-    output = torch.zeros(P_N, 3)
-    list_depth = list_depth.detach().numpy()
-    for index in range(len(list_pixels)):
-        X,Y,Z = pixel_to_world(list_pixels[index][0], list_pixels[index][1], list_depth[index], K, R, t)
-        output[index] = torch.tensor([X,Y,Z])
-    return output
-        
-        
-
-        
+def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_feat, chunk_size=10000):
+    device = image_features.device
+    f_N, feat_dim = image_features.shape
+    P_N = gaussian_feat.shape[0]
     
-
+    # Normalize features for faster cosine similarity computation
+    image_features = F.normalize(image_features, p=2, dim=1)
+    gaussian_feat = F.normalize(gaussian_feat, p=2, dim=1)
     
+    max_similarity = torch.full((f_N,), -float('inf'), device=device)
+    max_indices = torch.zeros(f_N, dtype=torch.long, device=device)
+    
+    for part in range(0, P_N, chunk_size):
+        chunk = gaussian_feat[part:part + chunk_size]
+        # Use matrix multiplication for faster similarity computation
+        similarity = torch.mm(image_features, chunk.t())
+        
+        chunk_max, chunk_indices = similarity.max(dim=1)
+        update_mask = chunk_max > max_similarity
+        max_similarity[update_mask] = chunk_max[update_mask]
+        max_indices[update_mask] = chunk_indices[update_mask] + part
 
+    point_vis = gaussian_pcd[max_indices].cpu().numpy().astype(np.float64)
+    keypoints_matched = keypoints[..., :2].cpu().numpy().astype(np.float64)
+    
+    return point_vis, keypoints_matched
+
+        
 
 def localize_set(model_path, name, views, gaussians, pipeline, background, args):
 
@@ -187,101 +195,48 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     img_dir = "./datasets/images/"
     query_img_name = "frame-000005.color.png"
     query_img_name_noext = "frame-000005"
-    ref_img_name_noext = "frame-000005"
-    ref_img_name = "frame-000005.color.png"
+    
 
     query_img_path = os.path.join(img_dir, query_img_name)
     query_img = cv2.imread(query_img_path) # [H,W,C] = [480,640,3]
 
-    
-    #==========================
-    
-    ref_img_path = os.path.join(img_dir, ref_img_name)
-    ref_img = cv2.imread(ref_img_path)
-    tensor_ref_img = xfeat.parse_input(ref_img) # [1,C,H,W] = [1,3,480,640]
-    ref_keypoints, _, ref_feature = xfeat.detectAndCompute(tensor_ref_img, 
-                                                                 top_k=25)[0].values()  
-    #====================================
-    # Get the reference img pose
-
-    
     # Extract sparse features
     tensor_query_img = xfeat.parse_input(query_img) # [1,C,H,W] = [1,3,480,640]
     query_keypoints, _, query_feature = xfeat.detectAndCompute(tensor_query_img, 
-                                                                 top_k=25)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
+                                                                 top_k=100)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
     # Get the reference img pose
-    ref = [ view for view in views if view.image_name == ref_img_name_noext]
     que = [ view for view in views if view.image_name == query_img_name_noext]
     # Get the reference R and t
-    K_ref, K_query = getIntrinsic(ref[0]), getIntrinsic(que[0])
-    print("K_key = ", K_query)
-    
-    render_pkg = render(ref[0], gaussians, pipeline, background)
-    
-    #-------------------------------------------------#
-    #----- points_in_image size [4,Number of points]--#
-    #----- feature_map size [C,H,W] = [64,480,640]----#
-    #-------------------------------------------------#
-    feature_map, points_in_render_image,  depth_map = render_pkg["feature_map"], render_pkg["points_in_render_images"], render_pkg["depth"] 
-    
+    K_query = getIntrinsic(que[0])
 
+     # Find initial pose prior via 2D-3D matching
+    with torch.no_grad():
+        matched_3d, matched_2d = find_2d3d_correspondences(
+                    query_keypoints,
+                    query_feature,
+                    gaussian_pcd,
+                    gaussian_feat
+                )
 
-    # Get the proj pixel 
-    points_x, points_y, points_z, pw = points_in_render_image[0].tolist(), points_in_render_image[1].tolist(), points_in_render_image[2].tolist(), points_in_render_image[3].tolist()
-    X,Y,Z = points_in_render_image[4].tolist(), points_in_render_image[5].tolist(), points_in_render_image[6].tolist()
-    points_xyzw = [(x, y, z, w, xx,yy,zz) for x,y,z,w,xx,yy,zz in zip(points_x, points_y, points_z, pw, X,Y,Z)]
-    proj_p_number = len(points_x) - points_x.count(-1)
-    proj_p_feature = torch.zeros(proj_p_number, 64)
-    proj_p_xyzw = torch.zeros(proj_p_number,7)
-    index = 0
-    
-  
-    
-    for xyzw in points_xyzw:
-        if xyzw[0] !=-1 and xyzw[1] != -1 and xyzw[0] < 480 and xyzw[1] < 640 and xyzw[0]>0 and xyzw[1]>0:
-            proj_p_feature[index] = feature_map[:,int(xyzw[0]), int(xyzw[1])]
-            proj_p_xyzw[index, 0], proj_p_xyzw[index, 1], proj_p_xyzw[index, 2], proj_p_xyzw[index, 3] = xyzw[1], xyzw[0], xyzw[2], xyzw[3]
-            proj_p_xyzw[index, 4], proj_p_xyzw[index, 5], proj_p_xyzw[index, 6] = xyzw[4], xyzw[5], xyzw[6]
-            index = index + 1      
-          
-    idxs0, idxs1 = xfeat.match(query_feature.to("cpu"), proj_p_feature, min_cossim=0.82 )
-    mkpts_0, mkpts_1 = query_keypoints[idxs0].cpu().numpy(), proj_p_xyzw[idxs1].cpu().numpy()
+    gt_R = que[0].R
+    gt_t = que[0].T
 
-    
-    canvas, query_points_valid, proj_points_valid = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
-    
-
-
-    
-
-    #match_3d = getAllOrigPoints(proj_points_valid, 640,480, ref[0].full_proj_transform.to("cpu"))
-    match_3d = []
-    for hello in proj_points_valid:
-        match_3d.append([hello[4], hello[5], hello[6]])
-    print("match_3d = ", match_3d)
-    print("query point valid = ", query_points_valid)
-    print("proj point valid = ", proj_points_valid)
-    
-    _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(getXY(proj_points_valid)), 
+    _, R, t, _ = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K_query, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
                                                   iterationsCount=args.ransac_iters
                                                   )
-    R, _ = cv2.Rodrigues(R) 
-    
-    print("R = ", R  , "  t= ", t)
-    print("ref R = ", ref[0].R, "que t = ", ref[0].T)
-    rotError, transError = calculate_pose_errors(ref[0].R, ref[0].T, R.T, t)
+            
+    R, _ = cv2.Rodrigues(R)            
+
+    # Calculate the rotation and translation errors using existing function
+    rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
 
     # Print the errors
     print(f"Rotation Error: {rotError} deg")
     print(f"Translation Error: {transError} cm")
-    
-    plt.figure(figsize=(12,12))
-    plt.imshow(canvas[..., ::-1]), plt.show()
-    
-    
+   
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 
     gaussians = GaussianModel(dataset.sh_degree)

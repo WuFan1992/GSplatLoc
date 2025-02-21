@@ -187,8 +187,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     img_dir = "./datasets/images/"
     query_img_name = "frame-000005.color.png"
     query_img_name_noext = "frame-000005"
-    ref_img_name_noext = "frame-000005"
-    ref_img_name = "frame-000005.color.png"
+    ref_img_name_noext = "frame-000085"
+    ref_img_name = "frame-000085.color.png"
 
     query_img_path = os.path.join(img_dir, query_img_name)
     query_img = cv2.imread(query_img_path) # [H,W,C] = [480,640,3]
@@ -200,7 +200,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     ref_img = cv2.imread(ref_img_path)
     tensor_ref_img = xfeat.parse_input(ref_img) # [1,C,H,W] = [1,3,480,640]
     ref_keypoints, _, ref_feature = xfeat.detectAndCompute(tensor_ref_img, 
-                                                                 top_k=25)[0].values()  
+                                                                 top_k=4096)[0].values()  
     #====================================
     # Get the reference img pose
 
@@ -208,13 +208,13 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     # Extract sparse features
     tensor_query_img = xfeat.parse_input(query_img) # [1,C,H,W] = [1,3,480,640]
     query_keypoints, _, query_feature = xfeat.detectAndCompute(tensor_query_img, 
-                                                                 top_k=25)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
+                                                                 top_k=4096)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
     # Get the reference img pose
     ref = [ view for view in views if view.image_name == ref_img_name_noext]
     que = [ view for view in views if view.image_name == query_img_name_noext]
     # Get the reference R and t
     K_ref, K_query = getIntrinsic(ref[0]), getIntrinsic(que[0])
-    print("K_key = ", K_query)
+
     
     render_pkg = render(ref[0], gaussians, pipeline, background)
     
@@ -238,9 +238,10 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
   
     
     for xyzw in points_xyzw:
-        if xyzw[0] !=-1 and xyzw[1] != -1 and xyzw[0] < 480 and xyzw[1] < 640 and xyzw[0]>0 and xyzw[1]>0:
-            proj_p_feature[index] = feature_map[:,int(xyzw[0]), int(xyzw[1])]
-            proj_p_xyzw[index, 0], proj_p_xyzw[index, 1], proj_p_xyzw[index, 2], proj_p_xyzw[index, 3] = xyzw[1], xyzw[0], xyzw[2], xyzw[3]
+
+        if xyzw[0] !=-1 and xyzw[1] != -1 and xyzw[0] < 640 and xyzw[1] < 480 and xyzw[0]>0 and xyzw[1]>0:
+            proj_p_feature[index] = feature_map[:,int(xyzw[1]), int(xyzw[0])]
+            proj_p_xyzw[index, 0], proj_p_xyzw[index, 1], proj_p_xyzw[index, 2], proj_p_xyzw[index, 3] = xyzw[0], xyzw[1], xyzw[2], xyzw[3]
             proj_p_xyzw[index, 4], proj_p_xyzw[index, 5], proj_p_xyzw[index, 6] = xyzw[4], xyzw[5], xyzw[6]
             index = index + 1      
           
@@ -252,17 +253,30 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     
 
 
+    query_point_valid_hello = [[515.,53.], [305.,20.], [320., 77.], [374.,26.], [282., 62.], [365.,49.], [295., 272.], [280.,25.], [457.,267.]]
+    match_3d_hello = [[-6.395389, 2.8958693, 6.798067], [-4.6355796, -1.200465, 5.0189414], [-4.1403184, -0.3968175, 6.4790726], [-5.6746674, 0.25262165, 8.035915], [-4.018721, -1.2590245, 5.8101525], [-4.709421, -0.2041668, 4.6004915], [-0.41768503, 1.1654953, 6.5677066], [-5.2582793, -1.5145651, 12.147212], [-2.565925, 2.3412042, 2.4039721]]
+    proj_points_valid_hello = [[5.1916528e+02,  5.2064564e+01], [3.0707730e+02,  1.9785721e+01], [3.2093994e+02,  7.6446777e+01], [3.7386636e+02,  2.5158417e+01], [2.8230994e+02,  5.7595512e+01], [3.6531406e+02,  4.4861385e+01], [2.9371579e+02,  2.6925873e+02], [2.8117508e+02,  2.4051544e+01], [4.6225717e+02,  2.6963049e+02]]
     
-
     #match_3d = getAllOrigPoints(proj_points_valid, 640,480, ref[0].full_proj_transform.to("cpu"))
+    
     match_3d = []
     for hello in proj_points_valid:
         match_3d.append([hello[4], hello[5], hello[6]])
+    """
+    print("match_3d type = ", type(match_3d[0][0]))
+    print("match_3d_hello type = ", type(match_3d_hello[0][0]))    
     print("match_3d = ", match_3d)
-    print("query point valid = ", query_points_valid)
-    print("proj point valid = ", proj_points_valid)
+    print("match_3d_hello", match_3d_hello)
+    print("match_3d -match_3d_hello = ", np.array(match_3d)-np.array(match_3d_hello))
+    print("proj_points_valid_hello type = ", type(proj_points_valid_hello[0][0]))
+    print("getXY(proj_points_valid) type = ", type(proj_points_valid[0][0]))
+    print("proj_points_valid_hello = ", proj_points_valid_hello)
+    print("getXY(proj_points_valid) = ", getXY(proj_points_valid))
+    print("proj_point_valid - proj_point_valid_hello", np.array(getXY(proj_points_valid))-np.array(proj_points_valid_hello))
+
+    """
     
-    _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(getXY(proj_points_valid)), 
+    _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
                                                   K_query, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
