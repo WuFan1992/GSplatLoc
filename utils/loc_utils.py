@@ -13,7 +13,9 @@ def calculate_pose_errors(R_gt, t_gt, R_est, t_est):
 
     # Calculate translation error
     transError = np.linalg.norm(t_gt - t_est.squeeze(1)) * 100  # Convert to cm
-
+    #transError = np.linalg.norm(-R_gt.T @ t_gt + R_est.T @ t_est, axis=0)*100
+    #transError = np.median(transError)
+    
     return rotError, transError
 
 def log_errors(model_path, name, rotation_errors, translation_errors, inplace_text):

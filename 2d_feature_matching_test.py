@@ -66,7 +66,7 @@ def getAllOrigPoints(points_in_render_img, W,H,ProjMatrix):
 def getXY(points):
     res = []
     for p in points:
-        res.append([p[1],p[0]])
+        res.append([p[0],p[1]])
     return res
     
     
@@ -187,8 +187,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     img_dir = "./datasets/images/"
     query_img_name = "frame-000005.color.png"
     query_img_name_noext = "frame-000005"
-    ref_img_name_noext = "frame-000085"
-    ref_img_name = "frame-000085.color.png"
+    ref_img_name_noext = "frame-000065"
+    ref_img_name = "frame-000065.color.png"
 
     query_img_path = os.path.join(img_dir, query_img_name)
     query_img = cv2.imread(query_img_path) # [H,W,C] = [480,640,3]
@@ -214,6 +214,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     que = [ view for view in views if view.image_name == query_img_name_noext]
     # Get the reference R and t
     K_ref, K_query = getIntrinsic(ref[0]), getIntrinsic(que[0])
+    print("K_query = ", K_query)
 
     
     render_pkg = render(ref[0], gaussians, pipeline, background)
@@ -221,6 +222,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     #-------------------------------------------------#
     #----- points_in_image size [4,Number of points]--#
     #----- feature_map size [C,H,W] = [64,480,640]----#
+    #------points_in_render_image [7,N] --------------#
     #-------------------------------------------------#
     feature_map, points_in_render_image,  depth_map = render_pkg["feature_map"], render_pkg["points_in_render_images"], render_pkg["depth"] 
     
@@ -230,20 +232,25 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     points_x, points_y, points_z, pw = points_in_render_image[0].tolist(), points_in_render_image[1].tolist(), points_in_render_image[2].tolist(), points_in_render_image[3].tolist()
     X,Y,Z = points_in_render_image[4].tolist(), points_in_render_image[5].tolist(), points_in_render_image[6].tolist()
     points_xyzw = [(x, y, z, w, xx,yy,zz) for x,y,z,w,xx,yy,zz in zip(points_x, points_y, points_z, pw, X,Y,Z)]
-    proj_p_number = len(points_x) - points_x.count(-1)
-    proj_p_feature = torch.zeros(proj_p_number, 64)
+    # Get the length of all the projected points
+    proj_p_number = (points_in_render_image.shape[1] - torch.sum(points_in_render_image[0].eq(-1))).item()
     proj_p_xyzw = torch.zeros(proj_p_number,7)
+    proj_p_feature = torch.zeros(proj_p_number, 64)
     index = 0
-    
+    """
+    points = points_in_render_image
+    proj_p_xyzw = points[:,[i for i in torch.arange(points.size(1)) if 0<points[0][i]<640 and 0<points[1][i]<480]]
+    #proj_p_feature = feature_map[:,x,]
+    """
   
     
-    for xyzw in points_xyzw:
-
+    for xyzw in points_xyzw: 
         if xyzw[0] !=-1 and xyzw[1] != -1 and xyzw[0] < 640 and xyzw[1] < 480 and xyzw[0]>0 and xyzw[1]>0:
             proj_p_feature[index] = feature_map[:,int(xyzw[1]), int(xyzw[0])]
             proj_p_xyzw[index, 0], proj_p_xyzw[index, 1], proj_p_xyzw[index, 2], proj_p_xyzw[index, 3] = xyzw[0], xyzw[1], xyzw[2], xyzw[3]
             proj_p_xyzw[index, 4], proj_p_xyzw[index, 5], proj_p_xyzw[index, 6] = xyzw[4], xyzw[5], xyzw[6]
-            index = index + 1      
+            index = index + 1    
+  
           
     idxs0, idxs1 = xfeat.match(query_feature.to("cpu"), proj_p_feature, min_cossim=0.82 )
     mkpts_0, mkpts_1 = query_keypoints[idxs0].cpu().numpy(), proj_p_xyzw[idxs1].cpu().numpy()
@@ -262,6 +269,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     match_3d = []
     for hello in proj_points_valid:
         match_3d.append([hello[4], hello[5], hello[6]])
+    print("match_3d = ", match_3d)
+    #print("proj_points_valid = ", np.array(getXY(proj_points_valid).tolist())
     """
     print("match_3d type = ", type(match_3d[0][0]))
     print("match_3d_hello type = ", type(match_3d_hello[0][0]))    
@@ -285,8 +294,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     R, _ = cv2.Rodrigues(R) 
     
     print("R = ", R  , "  t= ", t)
-    print("ref R = ", ref[0].R, "que t = ", ref[0].T)
-    rotError, transError = calculate_pose_errors(ref[0].R, ref[0].T, R.T, t)
+    print("query R = ", que[0].R, "query t = ", que[0].T)
+    rotError, transError = calculate_pose_errors(que[0].R, que[0].T, R.T, t)
 
     # Print the errors
     print(f"Rotation Error: {rotError} deg")
