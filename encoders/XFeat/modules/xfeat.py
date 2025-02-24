@@ -70,7 +70,7 @@ class XFeat(nn.Module):
 		M1 = F.normalize(M1, dim=1)
 
 		#Convert logits to heatmap and extract kpts
-		K1h = self.get_kpts_heatmap(K1)
+		K1h = self.get_kpts_heatmap(K1) # torch.Size([1, 1, 480, 640])
 		mkpts = self.NMS(K1h, threshold=detection_threshold, kernel_size=5)
 
 		#Compute reliability scores
@@ -96,6 +96,7 @@ class XFeat(nn.Module):
 		mkpts = mkpts * torch.tensor([rw1,rh1], device=mkpts.device).view(1, 1, -1)
 
 		valid = scores > 0
+
 		return [  
 				   {'keypoints': mkpts[b][valid[b]],
 					'scores': scores[b][valid[b]],
@@ -252,14 +253,12 @@ class XFeat(nn.Module):
 		local_max = nn.MaxPool2d(kernel_size=kernel_size, stride=1, padding=pad)(x)
 		pos = (x == local_max) & (x > threshold)
 		pos_batched = [k.nonzero()[..., 1:].flip(-1) for k in pos]
-
 		pad_val = max([len(x) for x in pos_batched])
 		pos = torch.zeros((B, pad_val, 2), dtype=torch.long, device=x.device)
 
 		#Pad kpts and build (B, N, 2) tensor
 		for b in range(len(pos_batched)):
 			pos[b, :len(pos_batched[b]), :] = pos_batched[b]
-
 		return pos
 
 	@torch.inference_mode()
