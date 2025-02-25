@@ -134,7 +134,7 @@ def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
     for i in range(len(mask)):
         if mask[i]:
             ref_points_valid.append(ref_points[i])
-            dst_points_valid.append(dst_points[i])
+            dst_points_valid.append(dst_points[i, [4,5,6]])
 
     return img_matches, ref_points_valid, dst_points_valid
 
@@ -279,12 +279,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     mkpts_0, mkpts_1 = query_keypoints[idxs0].cpu().numpy(), proj_p_xyzw[idxs1].cpu().numpy()
     canvas, query_points_valid, proj_points_valid = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
     
-   
-    match_3d = []
-    for hello in proj_points_valid:
-        match_3d.append([hello[4], hello[5], hello[6]])
-    print("match_3d = ", match_3d)
 
+    match_3d = proj_points_valid
     
     _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
                                                   K_query, 

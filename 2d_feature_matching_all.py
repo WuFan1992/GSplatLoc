@@ -130,13 +130,13 @@ def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
     
     #clean the keypoint with mask
     ref_points_valid = []
-    dst_points_valid = []
+    match_3d_points = []
     for i in range(len(mask)):
         if mask[i]:
             ref_points_valid.append(ref_points[i])
-            dst_points_valid.append(dst_points[i])
+            match_3d_points.append(dst_points[i, [4,5,6]])
 
-    return  ref_points_valid, dst_points_valid
+    return  ref_points_valid, match_3d_points
 
 
 
@@ -152,10 +152,10 @@ def getIntrinsic(view):
 def getRefImg(query_name):
     #Get the image number
     query_index = int(query_name.split("-")[1])
-    if query_index + 56 > 1000:
-        ref_index = query_index - 56
+    if query_index + 16 > 1000:
+        ref_index = query_index - 16
     else:
-        ref_index = query_index + 56
+        ref_index = query_index + 16
     if ref_index > 99:
         ref_index = "000" + str(ref_index)
     else:
@@ -244,14 +244,9 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
         #Transform the query and ref img to opencv format
         query_img = query_img.permute(1,2,0).cpu().numpy()
         ref_img = ref_img.permute(1,2,0).cpu().numpy()
-        query_points_valid, proj_points_valid = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
+        query_points_valid, match_3d = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
     
    
-        match_3d = []
-        for hello in proj_points_valid:
-            match_3d.append([hello[4], hello[5], hello[6]])
-
-    
         _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
                                                       K_query, 
                                                       distCoeffs=None, 
