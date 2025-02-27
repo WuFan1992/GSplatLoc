@@ -152,10 +152,10 @@ def getIntrinsic(view):
 def getRefImg(query_name):
     #Get the image number
     query_index = int(query_name.split("-")[1])
-    if query_index + 16 > 1000:
-        ref_index = query_index - 16
+    if query_index + 15 > 1000:
+        ref_index = query_index - 15
     else:
-        ref_index = query_index + 16
+        ref_index = query_index + 15
     if ref_index > 99:
         ref_index = "000" + str(ref_index)
     else:
@@ -166,7 +166,10 @@ def getRefImg(query_name):
   
 
 
-def localize_set(model_path, name, views, gaussians, pipeline, background, args):
+def localize_set(model_path, name, scene, gaussians, pipeline, background, args):
+
+    views_test = scene.getTestCameras()
+    views_train = scene.getTrainCameras()
 
     # Keep track of rotation and translation errors for calculation of the median error.
     rErrs = []
@@ -174,6 +177,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
 
     prior_rErr = []
     prior_tErr = []
+    pnp_p = []
+    inliers = []
 
 
     gaussian_pcd = gaussians.get_xyz
@@ -181,15 +186,16 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
         
     xfeat = XFeat(top_k=4096)
     
-    for _, view in enumerate(tqdm(views, desc="Rendering progress")):
+    for _, view in enumerate(tqdm(views_test, desc="Rendering progress")):
         
         #Get the image name and image itself
         query_name = view.image_name
         query_img = view.original_image[0:3, :, :]
+        query_seq = view.seq_num
         #Get the reference image name 
         ref_name = getRefImg(query_name)
         #load reference image
-        ref_view = [view for view in views if view.image_name == ref_name]
+        ref_view = [view for view in views_train if view.image_name == ref_name and view.seq_num == query_seq]
         ref_img = ref_view[0].original_image[0:3, :, :]
         #Get the image R and t and the reference K
         query_R, query_t, K_query = view.R, view.T, getIntrinsic(ref_view[0])
@@ -240,40 +246,53 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     
         idxs0, idxs1 = xfeat.match(query_feature.to("cpu"), proj_p_feature.to("cpu"), min_cossim=0.82 )
         mkpts_0, mkpts_1 = query_keypoints[idxs0].cpu().numpy(), proj_p_xyzw[idxs1].cpu().numpy()
-        
+
         #Transform the query and ref img to opencv format
         query_img = query_img.permute(1,2,0).cpu().numpy()
         ref_img = ref_img.permute(1,2,0).cpu().numpy()
         query_points_valid, match_3d = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
-    
+        
+        num_match = len(match_3d)
    
-        _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
+        _, R, t, inl = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
                                                       K_query, 
                                                       distCoeffs=None, 
                                                       flags=cv2.SOLVEPNP_ITERATIVE, 
-                                                      iterationsCount=args.ransac_iters
+                                                      iterationsCount=args.ransac_iters,
+                                                      reprojectionError = 3.0
                                                       )
         R, _ = cv2.Rodrigues(R) 
     
-        print("R = ", R  , "  t= ", t)
-        print("query R = ", query_R, "query t = ", query_t)
+        #print("R = ", R  , "  t= ", t)
+        #print("query R = ", query_R, "query t = ", query_t)
         rotError, transError = calculate_pose_errors(query_R, query_t, R.T, t)
 
         # Print the errors
         print(f"Rotation Error: {rotError} deg")
         print(f"Translation Error: {transError} cm")
-        
-        prior_rErr.append(rotError)
-        prior_tErr.append(transError)
+        print("query name = ", query_name,  " ref name = ", ref_view[0].image_name )
+        print(f"Rotation Error moyen: {np.mean(prior_rErr)} deg")
+        print(f"Translation Error moyen: {np.mean(prior_tErr)} cm")
+        if inl is not None:
+            prior_rErr.append(rotError)
+            prior_tErr.append(transError)
+            inliers.append(len(inl))
+            pnp_p.append(num_match)
+        print(f"Rotation Error moyen: {np.mean(prior_rErr)} deg")
+        print(f"Translation Error moyen: {np.mean(prior_tErr)} cm")
+        print(f"Mean Pnp points : {np.mean(pnp_p)}  ")
+        print(f"Mean inliers : { np.mean(inliers) } cm ")
     
     err_mean_rot =  np.mean(prior_rErr)
-    err_mean_trans = np.mean(prior_tErr) 
+    err_mean_trans = np.mean(prior_tErr)
+    mean_pnp_p = np.mean(pnp_p)
+    mean_inliers = np.mean(inliers) 
     print(f"Rotation Average Error: {err_mean_rot} deg ")
     print(f"Translation Average Error: {err_mean_trans} cm ")
+    print(f"Mean Pnp points : {mean_pnp_p}  ")
+    print(f"Mean inliers : {mean_inliers} cm ")
     
-    #plt.figure(figsize=(12,12))
-    #plt.imshow(canvas[..., ::-1]), plt.show()
-    
+
     
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 
@@ -281,7 +300,7 @@ def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args):
     scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False)
     bg_color = [1]*64 if dataset.white_background else [0]*64
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-    localize_set(dataset.model_path, "test", scene.getTestCameras(), gaussians, pipeline, background, args)
+    localize_set(dataset.model_path, "test", scene, gaussians, pipeline, background, args)
 
 
 if __name__ == "__main__":

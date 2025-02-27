@@ -74,7 +74,7 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_feature_map = torch::full({NUM_SEMANTIC_CHANNELS, H, W}, 0.0, float_opts); /***/
 
     /*********Fan WU*************/
-  torch::Tensor points_in_render_image = torch::full({2, P}, -1.0, float_opts);
+  torch::Tensor points_in_render_image = torch::full({7, P}, 0.0, float_opts);
    /*****************************/
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);

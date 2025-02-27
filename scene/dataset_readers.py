@@ -106,9 +106,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
-
-        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        ############ Fan WU #####################
+        #image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        image_path = os.path.join(images_folder, extr.name)
+        ##########################################
         image_name = os.path.basename(image_path).split(".")[0]
+        
         try:
             image = Image.open(image_path) 
         except:
@@ -152,7 +155,7 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
+def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8): 
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -166,11 +169,12 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
     
     reading_dir = "images" if images == None else images
 
- 
+    
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
                                            images_folder=os.path.join(path, reading_dir))
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
     semantic_feature_dim = cam_infos[0].semantic_feature.shape[0]
+
 
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
@@ -201,7 +205,8 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
                            ply_path=ply_path,
-                           semantic_feature_dim=semantic_feature_dim) 
+                           semantic_feature_dim=semantic_feature_dim)
+     
     return scene_info
 
 def readCamerasFromTransforms(path, transformsfile, white_background, semantic_feature_folder, extension=".png"): 

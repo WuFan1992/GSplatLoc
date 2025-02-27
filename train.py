@@ -114,6 +114,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         iter_end.record()
         
         #///////////////////////////////////////////
+        """
         if not iteration % 50:
             with torch.no_grad():
                 viewpoint_stack_0 = scene.getTrainCameras().copy()
@@ -136,7 +137,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 del feature_map_0
                 del residual_feature
 
-        
+        """
         #//////////////////////////////////////////
         
 
@@ -293,6 +294,9 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     # Start GUI server, configure and run training
+    ###### Fan WU #######
+    args.eval = True
+    #####################
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)

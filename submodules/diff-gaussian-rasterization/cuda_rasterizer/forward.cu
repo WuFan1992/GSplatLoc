@@ -253,8 +253,17 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	points_xy_image[idx] = point_image;
 
 	/*****************Fan WU*****************/
-	points_in_render_images[idx] = point_image.x;
-	points_in_render_images[idx + P] = point_image.y;
+	if(point_image.x < 640 && point_image.y < 480)
+	{
+		points_in_render_images[idx] = point_image.x;
+		points_in_render_images[idx + P] = point_image.y;
+		points_in_render_images[idx + 2*P] = p_proj.z;
+		points_in_render_images[idx + 3*P] = p_w;
+		points_in_render_images[idx + 4*P] = p_orig.x;
+		points_in_render_images[idx + 5*P] = p_orig.y;
+		points_in_render_images[idx + 6*P] = p_orig.z;
+	}
+
 
 	// Inverse 2D covariance and opacity neatly pack into one float4
 	conic_opacity[idx] = { conic.x, conic.y, conic.z, opacities[idx] };
