@@ -42,6 +42,11 @@ from matplotlib import colors as mcolors
 
 import torch.nn as nn
 
+# // For the netvlad global descriptor
+from torchvision.models import resnet18
+from netvlad.netvlad import NetVLAD
+from netvlad.netvlad import EmbedNet
+
 
 
 class InterpolateSparse2d(nn.Module):
@@ -114,11 +119,12 @@ def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
 
     # Draw the warped corners in image2
     img2_with_corners = img2.copy()
+    """
     for i in range(len(warped_corners)):
         start_point = tuple(warped_corners[i-1][0].astype(int))
         end_point = tuple(warped_corners[i][0].astype(int))
         cv2.line(img2_with_corners, start_point, end_point, (0, 255, 0), 4)  # Using solid green for corners
-
+    """
     # Prepare keypoints and matches for drawMatches function
     keypoints1 = [cv2.KeyPoint(p[0], p[1], 5) for p in ref_points]
     keypoints2 = [cv2.KeyPoint(p[0], p[1], 5) for p in dst_points]
@@ -188,15 +194,42 @@ def getWorldCoordinates(list_pixels, list_depth, K, R, t):
         output[index] = torch.tensor([X,Y,Z])
     return output
         
-        
+def createNetVlad():
+    encoder = resnet18(pretrained=True)
+    base_model = nn.Sequential(
+        encoder.conv1,
+        encoder.bn1,
+        encoder.relu,
+        encoder.maxpool,
+        encoder.layer1,
+        encoder.layer2,
+        encoder.layer3,
+        encoder.layer4,
+    )    
+    dim = list(base_model.parameters())[-1].shape[0]  # last channels (512)
 
-        
+    # Define model for embedding
+    net_vlad = NetVLAD(num_clusters=32, dim=dim, alpha=1.0)
+    model = EmbedNet(base_model, net_vlad).cuda()
     
+    return model
 
+def imageRetrieval(query_img, netvlad_model,global_desc_names):
     
+    global_desc, names = torch.squeeze(global_desc_names[0]), global_desc_names[1]
+    query_global_desc = netvlad_model(query_img[None])
+    
+    similarity = torch.mm(query_global_desc, global_desc.t().cuda())
+    _, idx = similarity.max(dim=1)
+    
+    num_seq = names[idx].split("/")[0]
+    img_name = names[idx].split("/")[1]
+    
+    return img_name, num_seq     
 
 
 def localize_set(model_path, name, views, gaussians, pipeline, background, args):
+
 
     # Keep track of rotation and translation errors for calculation of the median error.
     rErrs = []
@@ -208,27 +241,38 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
 
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
-        
-    xfeat = XFeat(top_k=100)
+    top_k = 4096
+    xfeat = XFeat(top_k=top_k)
     
     #Load image
-    img_dir = "./datasets/images/"
-    query_img_name = "frame-000005.color.png"
-    query_img_name_noext = "frame-000005"
-    ref_img_name_noext = "frame-000065"
-    ref_img_name = "frame-000065.color.png"
-
-    query_img_path = os.path.join(img_dir, query_img_name)
+    img_dir_query = "./datasets/wholehead/images/seq-01"
+    img_dir_ref = "./datasets/wholehead/images/"
+    query_img_name = "frame-000969.color.png"
+    query_img_name_noext = "frame-000969"
+    #ref_img_name_noext = "frame-000984"
+    #ref_img_name = "frame-000984.color.png"
+    
+    
+    query_img_path = os.path.join(img_dir_query, query_img_name)
     query_img = cv2.imread(query_img_path) # [H,W,C] = [480,640,3]
+    query_img_tensor = torch.tensor(query_img).permute(2,0,1).cuda() # [C,H,W]
+    
+    #Load the global descriptor
+    global_desc_names = torch.load("./netvlad/global_desc.pt")
+    netvlad_model = createNetVlad()
+    ref_name, ref_seq = imageRetrieval(query_img_tensor.to(torch.float), netvlad_model,global_desc_names)
+    ref_seq_name = ref_seq + "/" + ref_name 
+    
 
     
     #==========================
     
-    ref_img_path = os.path.join(img_dir, ref_img_name)
+    ref_img_path = os.path.join(img_dir_ref, ref_seq_name) + ".color.png"
+    print("ref_img_path = ", ref_img_path)
     ref_img = cv2.imread(ref_img_path)
-    tensor_ref_img = xfeat.parse_input(ref_img) # [1,C,H,W] = [1,3,480,640]
-    ref_keypoints, _, ref_feature = xfeat.detectAndCompute(tensor_ref_img, 
-                                                                 top_k=4096)[0].values()  
+    #tensor_ref_img = xfeat.parse_input(ref_img) # [1,C,H,W] = [1,3,480,640]
+    #ref_keypoints, _, ref_feature = xfeat.detectAndCompute(tensor_ref_img, 
+    #                                                             top_k=top_k)[0].values()  
     #====================================
     # Get the reference img pose
 
@@ -236,9 +280,9 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     # Extract sparse features
     tensor_query_img = xfeat.parse_input(query_img) # [1,C,H,W] = [1,3,480,640]
     query_keypoints, _, query_feature = xfeat.detectAndCompute(tensor_query_img, 
-                                                                 top_k=4096)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
+                                                                 top_k=top_k)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
     # Get the reference img pose
-    ref = [ view for view in views if view.image_name == ref_img_name_noext]
+    ref = [ view for view in views if view.image_name == ref_name and view.seq_num == ref_seq]
     que = [ view for view in views if view.image_name == query_img_name_noext]
     # Get the reference R and t
     K_ref, K_query = getIntrinsic(ref[0]), getIntrinsic(que[0])
@@ -281,14 +325,17 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     
 
     match_3d = proj_points_valid
+    print("number of matching points = ", len(proj_points_valid))
     
-    _, R, t, _ = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
+    _, R, t, inliers = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
                                                   K_query, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
-                                                  iterationsCount=args.ransac_iters
+                                                  iterationsCount=args.ransac_iters,
+                                                  reprojectionError=3.0
                                                   )
     R, _ = cv2.Rodrigues(R) 
+    #print("inliers number = ", len(inliers))
     
     print("R = ", R  , "  t= ", t)
     print("query R = ", que[0].R, "query t = ", que[0].T)

@@ -31,6 +31,11 @@ from warping.warp_utils import *
 from utils.loc_utils import *
 import torch.nn.functional as F
 
+# // For the netvlad global descriptor
+from torchvision.models import resnet18
+from netvlad.netvlad import NetVLAD
+from netvlad.netvlad import EmbedNet
+
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
 
@@ -163,6 +168,40 @@ def getRefImg(query_name):
     ref_name = "frame-" + str(ref_index)
     return  ref_name
 
+def createNetVlad():
+    encoder = resnet18(pretrained=True)
+    base_model = nn.Sequential(
+        encoder.conv1,
+        encoder.bn1,
+        encoder.relu,
+        encoder.maxpool,
+        encoder.layer1,
+        encoder.layer2,
+        encoder.layer3,
+        encoder.layer4,
+    )    
+    dim = list(base_model.parameters())[-1].shape[0]  # last channels (512)
+
+    # Define model for embedding
+    net_vlad = NetVLAD(num_clusters=32, dim=dim, alpha=1.0)
+    model = EmbedNet(base_model, net_vlad).cuda()
+    
+    return model
+
+def imageRetrieval(query_img, netvlad_model,global_desc_names):
+    
+    global_desc, names = torch.squeeze(global_desc_names[0]), global_desc_names[1]
+    query_global_desc = netvlad_model(query_img[None])
+    
+    similarity = torch.mm(query_global_desc, global_desc.t().cuda())
+    _, idx = similarity.max(dim=1)
+    
+    num_seq = names[idx].split("/")[0]
+    img_name = names[idx].split("/")[1]
+    
+    return img_name, num_seq
+    
+
   
 
 
@@ -181,8 +220,11 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     inliers = []
 
 
-    gaussian_pcd = gaussians.get_xyz
-    gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
+    #Load the global descriptor
+    global_desc_names = torch.load("./netvlad/global_desc.pt")
+    netvlad_model = createNetVlad()
+    
+    
         
     xfeat = XFeat(top_k=4096)
     
@@ -193,9 +235,9 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         query_img = view.original_image[0:3, :, :]
         query_seq = view.seq_num
         #Get the reference image name 
-        ref_name = getRefImg(query_name)
+        ref_name, ref_seq = imageRetrieval(query_img, netvlad_model,global_desc_names)
         #load reference image
-        ref_view = [view for view in views_train if view.image_name == ref_name and view.seq_num == query_seq]
+        ref_view = [view for view in views_train if view.image_name == ref_name and view.seq_num == ref_seq]
         ref_img = ref_view[0].original_image[0:3, :, :]
         #Get the image R and t and the reference K
         query_R, query_t, K_query = view.R, view.T, getIntrinsic(ref_view[0])
@@ -271,17 +313,15 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         print(f"Rotation Error: {rotError} deg")
         print(f"Translation Error: {transError} cm")
         print("query name = ", query_name,  " ref name = ", ref_view[0].image_name )
-        print(f"Rotation Error moyen: {np.mean(prior_rErr)} deg")
-        print(f"Translation Error moyen: {np.mean(prior_tErr)} cm")
         if inl is not None:
             prior_rErr.append(rotError)
             prior_tErr.append(transError)
             inliers.append(len(inl))
             pnp_p.append(num_match)
-        print(f"Rotation Error moyen: {np.mean(prior_rErr)} deg")
-        print(f"Translation Error moyen: {np.mean(prior_tErr)} cm")
-        print(f"Mean Pnp points : {np.mean(pnp_p)}  ")
-        print(f"Mean inliers : { np.mean(inliers) } cm ")
+        #print(f"Rotation Error moyen: {np.mean(prior_rErr)} deg")
+        #print(f"Translation Error moyen: {np.mean(prior_tErr)} cm")
+        #print(f"Mean Pnp points : {np.mean(pnp_p)}  ")
+        #print(f"Mean inliers : { np.mean(inliers) } cm ")
     
     err_mean_rot =  np.mean(prior_rErr)
     err_mean_trans = np.mean(prior_tErr)
