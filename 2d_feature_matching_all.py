@@ -32,9 +32,11 @@ from utils.loc_utils import *
 import torch.nn.functional as F
 
 # // For the netvlad global descriptor
-from torchvision.models import resnet18
 from netvlad.netvlad import NetVLAD
-from netvlad.netvlad import EmbedNet
+
+###############################
+# python 2d_feature_matching_all.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000  
+################################
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
@@ -169,29 +171,17 @@ def getRefImg(query_name):
     return  ref_name
 
 def createNetVlad():
-    encoder = resnet18(pretrained=True)
-    base_model = nn.Sequential(
-        encoder.conv1,
-        encoder.bn1,
-        encoder.relu,
-        encoder.maxpool,
-        encoder.layer1,
-        encoder.layer2,
-        encoder.layer3,
-        encoder.layer4,
-    )    
-    dim = list(base_model.parameters())[-1].shape[0]  # last channels (512)
+    conf = {"model_name": "VGG16-NetVLAD-Pitts30K", "whiten": True}
 
-    # Define model for embedding
-    net_vlad = NetVLAD(num_clusters=32, dim=dim, alpha=1.0)
-    model = EmbedNet(base_model, net_vlad).cuda()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = NetVLAD(conf).eval().to(device)
     
     return model
 
 def imageRetrieval(query_img, netvlad_model,global_desc_names):
     
     global_desc, names = torch.squeeze(global_desc_names[0]), global_desc_names[1]
-    query_global_desc = netvlad_model(query_img[None])
+    query_global_desc = netvlad_model(query_img[None])["global_descriptor"]
     
     similarity = torch.mm(query_global_desc, global_desc.t().cuda())
     _, idx = similarity.max(dim=1)

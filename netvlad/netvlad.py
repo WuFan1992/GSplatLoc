@@ -1,88 +1,149 @@
+import logging
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.models as models
+from scipy.io import loadmat
+
+from netvlad.base_model import BaseModel
+
+logger = logging.getLogger(__name__)
+
+EPS = 1e-6
 
 
-class NetVLAD(nn.Module):
-    """NetVLAD layer implementation"""
-
-    def __init__(self, num_clusters=64, dim=128, alpha=100.0,
-                 normalize_input=True):
-        """
-        Args:
-            num_clusters : int
-                The number of clusters
-            dim : int
-                Dimension of descriptors
-            alpha : float
-                Parameter of initialization. Larger value is harder assignment.
-            normalize_input : bool
-                If true, descriptor-wise L2 normalization is applied to input.
-        """
-        super(NetVLAD, self).__init__()
-        self.num_clusters = num_clusters
-        self.dim = dim
-        self.alpha = alpha
-        self.normalize_input = normalize_input
-        self.conv = nn.Conv2d(dim, num_clusters, kernel_size=(1, 1), bias=True)
-        self.centroids = nn.Parameter(torch.rand(num_clusters, dim))
-        self._init_params()
-
-    def _init_params(self):
-        self.conv.weight = nn.Parameter(
-            (2.0 * self.alpha * self.centroids).unsqueeze(-1).unsqueeze(-1)
-        )
-        self.conv.bias = nn.Parameter(
-            - self.alpha * self.centroids.norm(dim=1)
-        )
+class NetVLADLayer(nn.Module):
+    def __init__(self, input_dim=512, K=64, score_bias=False, intranorm=True):
+        super().__init__()
+        self.score_proj = nn.Conv1d(input_dim, K, kernel_size=1, bias=score_bias)
+        centers = nn.parameter.Parameter(torch.empty([input_dim, K]))
+        nn.init.xavier_uniform_(centers)
+        self.register_parameter("centers", centers)
+        self.intranorm = intranorm
+        self.output_dim = input_dim * K
 
     def forward(self, x):
-        N, C = x.shape[:2]
-
-        if self.normalize_input:
-            x = F.normalize(x, p=2, dim=1)  # across descriptor dim
-
-        # soft-assignment
-        soft_assign = self.conv(x).view(N, self.num_clusters, -1)
-        soft_assign = F.softmax(soft_assign, dim=1)
-
-        x_flatten = x.view(N, C, -1)
-        
-        # calculate residuals to each clusters
-        residual = x_flatten.expand(self.num_clusters, -1, -1, -1).permute(1, 0, 2, 3) - \
-            self.centroids.expand(x_flatten.size(-1), -1, -1).permute(1, 2, 0).unsqueeze(0)
-        residual *= soft_assign.unsqueeze(2)
-        vlad = residual.sum(dim=-1)
-
-        vlad = F.normalize(vlad, p=2, dim=2)  # intra-normalization
-        vlad = vlad.view(x.size(0), -1)  # flatten
-        vlad = F.normalize(vlad, p=2, dim=1)  # L2 normalize
-
-        return vlad
+        b = x.size(0)
+        scores = self.score_proj(x)
+        scores = F.softmax(scores, dim=1)
+        diff = x.unsqueeze(2) - self.centers.unsqueeze(0).unsqueeze(-1)
+        desc = (scores.unsqueeze(1) * diff).sum(dim=-1)
+        if self.intranorm:
+            # From the official MATLAB implementation.
+            desc = F.normalize(desc, dim=1)
+        desc = desc.view(b, -1)
+        desc = F.normalize(desc, dim=1)
+        return desc
 
 
-class EmbedNet(nn.Module):
-    def __init__(self, base_model, net_vlad):
-        super(EmbedNet, self).__init__()
-        self.base_model = base_model
-        self.net_vlad = net_vlad
+class NetVLAD(BaseModel):
+    default_conf = {"model_name": "VGG16-NetVLAD-Pitts30K", "whiten": True}
+    required_inputs = ["image"]
 
-    def forward(self, x):
-        x = self.base_model(x)
-        embedded_x = self.net_vlad(x)
-        return embedded_x
+    # Models exported using
+    # https://github.com/uzh-rpg/netvlad_tf_open/blob/master/matlab/net_class2struct.m.
+    checkpoint_urls = {
+        "VGG16-NetVLAD-Pitts30K": "https://cvg-data.inf.ethz.ch/hloc/netvlad/Pitts30K_struct.mat",  # noqa: E501
+        "VGG16-NetVLAD-TokyoTM": "https://cvg-data.inf.ethz.ch/hloc/netvlad/TokyoTM_struct.mat",  # noqa: E501
+    }
 
+    def _init(self, conf):
+        if conf["model_name"] not in self.checkpoint_urls:
+            raise ValueError(
+                f'{conf["model_name"]} not in {self.checkpoint_urls.keys()}.'
+            )
 
-class TripletNet(nn.Module):
-    def __init__(self, embed_net):
-        super(TripletNet, self).__init__()
-        self.embed_net = embed_net
+        # Download the checkpoint.
+        checkpoint_path = Path(
+            torch.hub.get_dir(), "netvlad", conf["model_name"] + ".mat"
+        )
+        if not checkpoint_path.exists():
+            checkpoint_path.parent.mkdir(exist_ok=True, parents=True)
+            url = self.checkpoint_urls[conf["model_name"]]
+            torch.hub.download_url_to_file(url, checkpoint_path)
 
-    def forward(self, a, p, n):
-        embedded_a = self.embed_net(a)
-        embedded_p = self.embed_net(p)
-        embedded_n = self.embed_net(n)
-        return embedded_a, embedded_p, embedded_n
+        # Create the network.
+        # Remove classification head.
+        backbone = list(models.vgg16().children())[0]
+        # Remove last ReLU + MaxPool2d.
+        self.backbone = nn.Sequential(*list(backbone.children())[:-2])
 
-    def feature_extract(self, x):
-        return self.embed_net(x)
+        self.netvlad = NetVLADLayer()
+
+        if conf["whiten"]:
+            self.whiten = nn.Linear(self.netvlad.output_dim, 4096)
+
+        # Parse MATLAB weights using https://github.com/uzh-rpg/netvlad_tf_open
+        mat = loadmat(checkpoint_path, struct_as_record=False, squeeze_me=True)
+
+        # CNN weights.
+        for layer, mat_layer in zip(self.backbone.children(), mat["net"].layers):
+            if isinstance(layer, nn.Conv2d):
+                w = mat_layer.weights[0]  # Shape: S x S x IN x OUT
+                b = mat_layer.weights[1]  # Shape: OUT
+                # Prepare for PyTorch - enforce float32 and right shape.
+                # w should have shape: OUT x IN x S x S
+                # b should have shape: OUT
+                w = torch.tensor(w).float().permute([3, 2, 0, 1])
+                b = torch.tensor(b).float()
+                # Update layer weights.
+                layer.weight = nn.Parameter(w)
+                layer.bias = nn.Parameter(b)
+
+        # NetVLAD weights.
+        score_w = mat["net"].layers[30].weights[0]  # D x K
+        # centers are stored as opposite in official MATLAB code
+        center_w = -mat["net"].layers[30].weights[1]  # D x K
+        # Prepare for PyTorch - make sure it is float32 and has right shape.
+        # score_w should have shape K x D x 1
+        # center_w should have shape D x K
+        score_w = torch.tensor(score_w).float().permute([1, 0]).unsqueeze(-1)
+        center_w = torch.tensor(center_w).float()
+        # Update layer weights.
+        self.netvlad.score_proj.weight = nn.Parameter(score_w)
+        self.netvlad.centers = nn.Parameter(center_w)
+
+        # Whitening weights.
+        if conf["whiten"]:
+            w = mat["net"].layers[33].weights[0]  # Shape: 1 x 1 x IN x OUT
+            b = mat["net"].layers[33].weights[1]  # Shape: OUT
+            # Prepare for PyTorch - make sure it is float32 and has right shape
+            w = torch.tensor(w).float().squeeze().permute([1, 0])  # OUT x IN
+            b = torch.tensor(b.squeeze()).float()  # Shape: OUT
+            # Update layer weights.
+            self.whiten.weight = nn.Parameter(w)
+            self.whiten.bias = nn.Parameter(b)
+
+        # Preprocessing parameters.
+        self.preprocess = {
+            "mean": mat["net"].meta.normalization.averageImage[0, 0],
+            "std": np.array([1, 1, 1], dtype=np.float32),
+        }
+
+    def _forward(self, image):
+        assert image.shape[1] == 3
+        #assert image.min() >= -EPS and image.max() <= 1 + EPS
+        image = torch.clamp(image * 255, 0.0, 255.0)  # Input should be 0-255.
+        mean = self.preprocess["mean"]
+        std = self.preprocess["std"]
+        image = image - image.new_tensor(mean).view(1, -1, 1, 1)
+        image = image / image.new_tensor(std).view(1, -1, 1, 1)
+
+        # Feature extraction.
+        descriptors = self.backbone(image)
+        b, c, _, _ = descriptors.size()
+        descriptors = descriptors.view(b, c, -1)
+
+        # NetVLAD layer.
+        descriptors = F.normalize(descriptors, dim=1)  # Pre-normalization.
+        desc = self.netvlad(descriptors)
+
+        # Whiten if needed.
+        if hasattr(self, "whiten"):
+            desc = self.whiten(desc)
+            desc = F.normalize(desc, dim=1)  # Final L2 normalization.
+
+        return {"global_descriptor": desc}

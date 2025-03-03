@@ -43,9 +43,8 @@ from matplotlib import colors as mcolors
 import torch.nn as nn
 
 # // For the netvlad global descriptor
-from torchvision.models import resnet18
 from netvlad.netvlad import NetVLAD
-from netvlad.netvlad import EmbedNet
+
 
 
 
@@ -195,29 +194,17 @@ def getWorldCoordinates(list_pixels, list_depth, K, R, t):
     return output
         
 def createNetVlad():
-    encoder = resnet18(pretrained=True)
-    base_model = nn.Sequential(
-        encoder.conv1,
-        encoder.bn1,
-        encoder.relu,
-        encoder.maxpool,
-        encoder.layer1,
-        encoder.layer2,
-        encoder.layer3,
-        encoder.layer4,
-    )    
-    dim = list(base_model.parameters())[-1].shape[0]  # last channels (512)
+    conf = {"model_name": "VGG16-NetVLAD-Pitts30K", "whiten": True}
 
-    # Define model for embedding
-    net_vlad = NetVLAD(num_clusters=32, dim=dim, alpha=1.0)
-    model = EmbedNet(base_model, net_vlad).cuda()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = NetVLAD(conf).eval().to(device)
     
     return model
 
 def imageRetrieval(query_img, netvlad_model,global_desc_names):
     
     global_desc, names = torch.squeeze(global_desc_names[0]), global_desc_names[1]
-    query_global_desc = netvlad_model(query_img[None])
+    query_global_desc = netvlad_model(query_img[None])["global_descriptor"]
     
     similarity = torch.mm(query_global_desc, global_desc.t().cuda())
     _, idx = similarity.max(dim=1)
@@ -246,29 +233,32 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     
     #Load image
     img_dir_query = "./datasets/wholehead/images/seq-01"
-    img_dir_ref = "./datasets/wholehead/images/"
-    query_img_name = "frame-000969.color.png"
-    query_img_name_noext = "frame-000969"
-    #ref_img_name_noext = "frame-000984"
-    #ref_img_name = "frame-000984.color.png"
+    query_img_name = "frame-000005.color.png"
+    query_img_name_noext = "frame-000005"
+
     
     
     query_img_path = os.path.join(img_dir_query, query_img_name)
     query_img = cv2.imread(query_img_path) # [H,W,C] = [480,640,3]
     query_img_tensor = torch.tensor(query_img).permute(2,0,1).cuda() # [C,H,W]
+    query_img_tensor = query_img_tensor / 255.0
+    #query_img_tensor = torch.tensor(query_img).cuda() # [C,H,W]
     
     #Load the global descriptor
     global_desc_names = torch.load("./netvlad/global_desc.pt")
     netvlad_model = createNetVlad()
     ref_name, ref_seq = imageRetrieval(query_img_tensor.to(torch.float), netvlad_model,global_desc_names)
+    ref_view = [ view for view in views if view.image_name == ref_name and view.seq_num == ref_seq]
+    print("ref_view[0].img = ", ref_view[0].image_name)
     ref_seq_name = ref_seq + "/" + ref_name 
+
     
 
     
     #==========================
-    
+    img_dir_ref = "./datasets/wholehead/images/"
     ref_img_path = os.path.join(img_dir_ref, ref_seq_name) + ".color.png"
-    print("ref_img_path = ", ref_img_path)
+    #print("ref_img_path = ", ref_img_path)
     ref_img = cv2.imread(ref_img_path)
     #tensor_ref_img = xfeat.parse_input(ref_img) # [1,C,H,W] = [1,3,480,640]
     #ref_keypoints, _, ref_feature = xfeat.detectAndCompute(tensor_ref_img, 

@@ -43,6 +43,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
 
         prior_rErr = []
         prior_tErr = []
+        pnp_p = []
+        inliers = []
 
         xfeat = XFeat()
 
@@ -79,7 +81,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
             gt_t = view.T
 
             print(f"Match speed: {time.time() - start}")
-            _, R, t, _ = cv2.solvePnPRansac(matched_3d, matched_2d, 
+            _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
@@ -95,8 +97,19 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
             print(f"Rotation Error: {rotError} deg")
             print(f"Translation Error: {transError} cm")
 
-            prior_rErr.append(rotError)
-            prior_tErr.append(transError)
+            if inl is not None:
+                inliers.append(len(inl))
+                prior_rErr.append(rotError)
+                prior_tErr.append(transError)
+        
+            
+        err_mean_rot =  np.mean(prior_rErr)
+        err_mean_trans = np.mean(prior_tErr)
+        mean_inliers = np.mean(inliers) 
+        print(f"Rotation Average Error: {err_mean_rot} deg ")
+        print(f"Translation Average Error: {err_mean_trans} cm ") 
+        print(f"Mean inliers : {mean_inliers}  ")
+        """
 
             w2c = torch.eye(4, 4, device='cuda')
             w2c[:3, :3] = torch.from_numpy(R).float()
@@ -164,7 +177,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
         #////////////////////////////////////////////////////////
         #log_errors(model_path, name, prior_rErr, prior_tErr, f"prior")
         #log_errors(model_path, name, rErrs, tErrs, "warp")
-        
+        """
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 
          
@@ -174,7 +187,7 @@ def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args):
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
     #///////////////////////////////
     #localize_set(dataset.model_path, "test", scene.getTestCameras(), gaussians, pipeline, background, args)
-    localize_set(dataset.model_path, "test", scene.getTrainCameras(), gaussians, pipeline, background, args)
+    localize_set(dataset.model_path, "test", scene.getTestCameras(), gaussians, pipeline, background, args)
 
 
 if __name__ == "__main__":
