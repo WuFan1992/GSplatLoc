@@ -228,7 +228,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
 
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
-    top_k = 4096
+    top_k = 10
     xfeat = XFeat(top_k=top_k)
     
     #Load image
@@ -272,14 +272,13 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     query_keypoints, _, query_feature = xfeat.detectAndCompute(tensor_query_img, 
                                                                  top_k=top_k)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
     # Get the reference img pose
-    ref = [ view for view in views if view.image_name == ref_name and view.seq_num == ref_seq]
     que = [ view for view in views if view.image_name == query_img_name_noext]
     # Get the reference R and t
-    K_ref, K_query = getIntrinsic(ref[0]), getIntrinsic(que[0])
+    K_ref, K_query = getIntrinsic(ref_view[0]), getIntrinsic(que[0])
 
 
     
-    render_pkg = render(ref[0], gaussians, pipeline, background)
+    render_pkg = render(ref_view[0], gaussians, pipeline, background)
     
     #-------------------------------------------------#
     #----- points_in_image size [4,Number of points]--#
@@ -313,7 +312,25 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     mkpts_0, mkpts_1 = query_keypoints[idxs0].cpu().numpy(), proj_p_xyzw[idxs1].cpu().numpy()
     canvas, query_points_valid, proj_points_valid = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
     
+    ####################
+    pp_idx = 1
+    proj_p_feature = proj_p_feature.clone().detach()
+    pcd_idx = torch.where(torch.all(torch.tensor(proj_points_valid[1]).to("cuda") == gaussian_pcd, dim=1))[0].item()
+    p_feature = gaussian_feat[pcd_idx].to("cpu")
+    
+    print("query xy = ", query_points_valid[pp_idx], " xyz = ", proj_points_valid[1])
+    print("query feature = ", query_feature[idxs0][pp_idx].to("cpu"))
+    print("proj feature = ", proj_p_feature[idxs1][pp_idx].to("cpu"))
+    print("p feature = ", p_feature)
+    
 
+    output = torch.cosine_similarity(query_feature[idxs0][pp_idx].to("cpu"), p_feature, dim=0)
+    print(output)
+    output = torch.cosine_similarity(proj_p_feature[idxs1][pp_idx].to("cpu"), p_feature, dim=0)
+    print(output)
+    output = torch.cosine_similarity(proj_p_feature[idxs1][pp_idx].to("cpu"), query_feature[idxs0][pp_idx].to("cpu"), dim=0)
+    print(output)
+    #################
     match_3d = proj_points_valid
     print("number of matching points = ", len(proj_points_valid))
     
@@ -325,7 +342,6 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
                                                   reprojectionError=3.0
                                                   )
     R, _ = cv2.Rodrigues(R) 
-    #print("inliers number = ", len(inliers))
     
     print("R = ", R  , "  t= ", t)
     print("query R = ", que[0].R, "query t = ", que[0].T)

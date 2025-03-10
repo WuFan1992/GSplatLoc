@@ -218,6 +218,10 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         
     xfeat = XFeat(top_k=4096)
     
+    start_time = time.time()
+    feature_matching_time = []
+
+    
     for _, view in enumerate(tqdm(views_test, desc="Rendering progress")):
         
         #Get the image name and image itself
@@ -239,6 +243,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         query_keypoints, _, query_feature = xfeat.detectAndCompute(query_img[None], 
                                                                  top_k=4096)[0].values()   #ref_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
         
+        before_render = time.time()
         render_pkg = render(ref_view[0], gaussians, pipeline, background)
     
         #-------------------------------------------------#
@@ -248,7 +253,8 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         #-------------------------------------------------#
         feature_map, points_in_render_image,  depth_map = render_pkg["feature_map"], render_pkg["points_in_render_images"], render_pkg["depth"] 
     
-
+        time_1 = time.time()
+        print("render time = ", time_1-before_render)
         # Get the length of all the projected points
         proj_p_number = (points_in_render_image.shape[1] - torch.sum(points_in_render_image[0].eq(-1))).item()
     
@@ -265,6 +271,9 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         proj_xy = proj_p_xyzw[:2].transpose(0,1)
         interpolator = InterpolateSparse2d('bicubic')
         
+        time_2 = time.time()
+        print("resize time = ", time_2 - time_1)
+        
         # Avoid to load all the keypoint coordinate at a time otherwise the CUDA will out of memory
         chunck_size = 10000
         chunck = proj_xy[0: chunck_size]
@@ -272,7 +281,13 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         for part in range(chunck_size,proj_xy.shape[0], chunck_size ):
             chunck = proj_xy[part: part + chunck_size]
             proj_p_feature_temp  = interpolator(feature_map[None], chunck[None], 480, 640).squeeze()
+            # Very rare case: the proj_p_feature_temps have only one feature with dim=64 so is [[64]] instead of [N,64]
+            if proj_p_feature_temp.dim()==1:
+                proj_p_feature_temp = proj_p_feature_temp[None]
             proj_p_feature = torch.cat((proj_p_feature, proj_p_feature_temp), 0)
+            
+        time_3 = time.time()
+        print("get proj feature = ", time_3 -time_2)
 
         proj_p_xyzw = proj_p_xyzw.T
     
@@ -284,8 +299,12 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         ref_img = ref_img.permute(1,2,0).cpu().numpy()
         query_points_valid, match_3d = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
         
+        print("get pose time = ", time.time()-time_3)
+        feature_matching_time.append(time.time()-before_render)
+        
+        
         num_match = len(match_3d)
-   
+
         _, R, t, inl = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
                                                       K_query, 
                                                       distCoeffs=None, 
@@ -302,25 +321,26 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         # Print the errors
         print(f"Rotation Error: {rotError} deg")
         print(f"Translation Error: {transError} cm")
-        print("query name = ", query_name,  " ref name = ", ref_view[0].image_name )
+
         if inl is not None:
             prior_rErr.append(rotError)
             prior_tErr.append(transError)
             inliers.append(len(inl))
             pnp_p.append(num_match)
-        #print(f"Rotation Error moyen: {np.mean(prior_rErr)} deg")
-        #print(f"Translation Error moyen: {np.mean(prior_tErr)} cm")
-        #print(f"Mean Pnp points : {np.mean(pnp_p)}  ")
-        #print(f"Mean inliers : { np.mean(inliers) } cm ")
+    
+    runing_time = time.time() - start_time
     
     err_mean_rot =  np.mean(prior_rErr)
     err_mean_trans = np.mean(prior_tErr)
     mean_pnp_p = np.mean(pnp_p)
     mean_inliers = np.mean(inliers) 
+    mean_match_time = np.mean(feature_matching_time)
     print(f"Rotation Average Error: {err_mean_rot} deg ")
     print(f"Translation Average Error: {err_mean_trans} cm ")
     print(f"Mean Pnp points : {mean_pnp_p}  ")
     print(f"Mean inliers : {mean_inliers} cm ")
+    print(f"Running time = ", runing_time)
+    print(f"Mean match time = ", mean_match_time)
     
 
     

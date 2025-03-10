@@ -183,7 +183,7 @@ class Model:
             self.rgb.append(np.array((255,0,0))/255)
         
     # Fan WU #######
-    def add_keypoints(self, keypoints, rgb):
+    def add_keypoint(self, keypoints, rgb):
         for kp in keypoints:
             self.xyz.append(np.array(kp))
             self.rgb.append(np.array((rgb))/255)
@@ -235,8 +235,8 @@ def main():
     match_2d3d_kpt = [[-0.57084793, -0.10012528,  0.92882341,]] 
     
     #model.add_keypoints(kpts)
-    model.add_keypoints(match_2d2d_kpt, (0,0,255))
-    model.add_keypoints(match_2d3d_kpt, (255,0,0))
+    model.add_keypoint(match_2d2d_kpt, (0,0,255))
+    model.add_keypoint(match_2d3d_kpt, (255,0,0))
     model.add_points()
     model.show()
 

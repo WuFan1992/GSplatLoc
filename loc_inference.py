@@ -50,11 +50,13 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
 
         gaussian_pcd = gaussians.get_xyz
         gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
+        
+        start_time = time.time()
+        feature_matching_time = []
     
         for _, view in enumerate(tqdm(views, desc="Rendering progress")):
             
             gt_im = view.original_image[0:3, :, :]
-
             # Extract sparse features
             gt_keypoints, _, gt_feature = xfeat.detectAndCompute(gt_im[None], 
                                                                  top_k=args.top_k)[0].values()
@@ -81,6 +83,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
             gt_t = view.T
 
             print(f"Match speed: {time.time() - start}")
+            feature_matching_time.append(time.time()-start)
             _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K, 
                                                   distCoeffs=None, 
@@ -102,13 +105,17 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
                 prior_rErr.append(rotError)
                 prior_tErr.append(transError)
         
+        runing_time = time.time() - start_time 
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
         mean_inliers = np.mean(inliers) 
+        mean_match_time = np.mean(feature_matching_time)
         print(f"Rotation Average Error: {err_mean_rot} deg ")
         print(f"Translation Average Error: {err_mean_trans} cm ") 
         print(f"Mean inliers : {mean_inliers}  ")
+        print(f"Running time = ", runing_time)
+        print(f"Mean match time = ", mean_match_time)
         """
 
             w2c = torch.eye(4, 4, device='cuda')
@@ -197,7 +204,7 @@ if __name__ == "__main__":
     pipeline = PipelineParams(parser)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--iteration", default=-1, type=int)
-    parser.add_argument("--top_k", default=1_000, type=int)
+    parser.add_argument("--top_k", default=4096, type=int)
     parser.add_argument("--ransac_iters", default=20000, type=int)
     parser.add_argument("--warp_lr", default=0.0005, type=float)
     parser.add_argument("--warp_iters", default=251, type=int)

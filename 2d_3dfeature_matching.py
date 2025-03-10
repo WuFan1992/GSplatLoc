@@ -176,7 +176,9 @@ def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_
 
         
 
-def localize_set(model_path, name, views, gaussians, pipeline, background, args):
+def localize_set(model_path, name, scenes, gaussians, pipeline, background, args):
+
+    test_views = scenes.getTestCameras()
 
     # Keep track of rotation and translation errors for calculation of the median error.
     rErrs = []
@@ -189,10 +191,10 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
         
-    xfeat = XFeat(top_k=100)
+    xfeat = XFeat(top_k=10)
 
     #Load image
-    img_dir = "./datasets/images/"
+    img_dir = "./datasets/wholehead/images/seq-01"
     query_img_name = "frame-000005.color.png"
     query_img_name_noext = "frame-000005"
     
@@ -203,9 +205,10 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     # Extract sparse features
     tensor_query_img = xfeat.parse_input(query_img) # [1,C,H,W] = [1,3,480,640]
     query_keypoints, _, query_feature = xfeat.detectAndCompute(tensor_query_img, 
-                                                                 top_k=100)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
+                                                                 top_k=10)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
+
     # Get the reference img pose
-    que = [ view for view in views if view.image_name == query_img_name_noext]
+    que = [ view for view in test_views if view.image_name == query_img_name_noext and view.seq_num == "seq-01"]
     # Get the reference R and t
     K_query = getIntrinsic(que[0])
 
@@ -217,6 +220,21 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
                     gaussian_pcd,
                     gaussian_feat
                 )
+        
+    print("match 2d = ", matched_2d)
+    print("match 3d = ", matched_3d)
+    
+    
+    ##########################
+    pcd_idx = torch.where(torch.all(torch.tensor(matched_3d[5]).to("cuda") == gaussian_pcd, dim=1))[0].item()
+    p_feature = gaussian_feat[pcd_idx].to("cpu")
+    
+    points_idx = torch.where(torch.all(torch.tensor(matched_2d[5]).to("cuda") == query_keypoints, dim=1))[0].item()
+    q_feature = query_feature[points_idx].to("cpu")
+    
+    output = torch.cosine_similarity(q_feature, p_feature, dim=0)
+    print(output)
+    ############################
 
     gt_R = que[0].R
     gt_t = que[0].T
@@ -243,7 +261,7 @@ def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args):
     scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False)
     bg_color = [1]*64 if dataset.white_background else [0]*64
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
-    localize_set(dataset.model_path, "test", scene.getTrainCameras(), gaussians, pipeline, background, args)
+    localize_set(dataset.model_path, "test", scene, gaussians, pipeline, background, args)
 
 
 if __name__ == "__main__":
