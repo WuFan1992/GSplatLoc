@@ -50,6 +50,69 @@ from matplotlib import colors as mcolors
 import torch.nn as nn
 
 
+class Image:
+    def __init__(self, bitmap: ['C', 'H', 'W'], fname: str, orig_shape=None):
+        self.bitmap     = bitmap
+        self.fname      = fname
+        if orig_shape is None:
+            self.orig_shape = self.bitmap.shape[1:]
+        else:
+            self.orig_shape = orig_shape
+
+    def resize_to(self, shape):
+        return Image(
+            self._pad(self._interpolate(self.bitmap, shape), shape),
+            self.fname,
+            orig_shape=self.bitmap.shape[1:],
+        )
+
+    @dimchecked
+    def to_image_coord(self, xys: [2, 'N']) -> ([2, 'N'], ['N']):
+        f, _size = self._compute_interpolation_size(self.bitmap.shape[1:])
+        scaled = xys / f
+
+        h, w = self.orig_shape
+        x, y = scaled
+
+        mask = (0 <= x) & (x < w) & (0 <= y) & (y < h)
+
+        return scaled, mask
+
+    def _compute_interpolation_size(self, shape):
+        x_factor = self.orig_shape[0] / shape[0]
+        y_factor = self.orig_shape[1] / shape[1]
+
+        f = 1 / max(x_factor, y_factor)
+
+        if x_factor > y_factor:
+            new_size = (shape[0], int(f * self.orig_shape[1]))
+        else:
+            new_size = (int(f * self.orig_shape[0]), shape[1])
+
+        return f, new_size
+
+    @dimchecked
+    def _interpolate(self, image: ['C', 'H', 'W'], shape) -> ['C', 'h', 'w']:
+        _f, size = self._compute_interpolation_size(shape)
+        return F.interpolate(
+            image.unsqueeze(0),
+            size=size,
+            mode='bilinear',
+            align_corners=False,
+        ).squeeze(0)
+    
+    @dimchecked
+    def _pad(self, image: ['C', 'H', 'W'], shape) -> ['C', 'h', 'w']:
+        x_pad = shape[0] - image.shape[1]
+        y_pad = shape[1] - image.shape[2]
+
+        if x_pad < 0 or y_pad < 0:
+            raise ValueError("Attempting to pad by negative value")
+
+        return F.pad(image, (0, y_pad, 0, x_pad))
+    
+
+
 
 class InterpolateSparse2d(nn.Module):
     """ Efficiently interpolate tensor at given sparse 2D positions. """ 
@@ -77,33 +140,6 @@ class InterpolateSparse2d(nn.Module):
         return x.permute(0,2,3,1).squeeze(-2)
 
 
-def pixel2ndc(pixel, S):
-    return (((pixel/0.5)+1.0)/S)-1.0
-
-def getOrigPoint(point_in_render_img, W, H, ProjMatrix):
-    pixel_x, pixel_y, proj_z, p_w = point_in_render_img[1], point_in_render_img[0], point_in_render_img[2], point_in_render_img[3]
-    p_proj_x, p_proj_y = pixel2ndc(pixel_x, W), pixel2ndc(pixel_y, H)
-    p_hom_x, p_hom_y, p_hom_z = p_proj_x/p_w, p_proj_y/p_w, proj_z/p_w
-    p_hom_w = 1/p_w
-    p_hom = np.array([p_hom_x, p_hom_y, p_hom_z,p_hom_w])
-    origP = np.matmul(p_hom, np.linalg.inv(ProjMatrix), dtype=np.float32)
-    origP = origP[:3]
-    print("ori = ", point_in_render_img[4], point_in_render_img[5],  point_in_render_img[6] )
-    return origP
-
-def getAllOrigPoints(points_in_render_img, W,H,ProjMatrix):
-    match_3d = []
-    for piri in points_in_render_img:
-        origP = getOrigPoint(piri, W,H,ProjMatrix)
-        match_3d.append(origP)
-    return match_3d
-
-def getXY(points):
-    res = []
-    for p in points:
-        res.append([p[0],p[1]])
-    return res
-    
     
 
 def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
@@ -156,19 +192,7 @@ def getIntrinsic(view):
     K[1, 2] = view.image_height / 2
     return K
 
-def getRefImg(query_name):
-    #Get the image number
-    query_index = int(query_name.split("-")[1])
-    if query_index + 15 > 1000:
-        ref_index = query_index - 15
-    else:
-        ref_index = query_index + 15
-    if ref_index > 99:
-        ref_index = "000" + str(ref_index)
-    else:
-        ref_index = "0000"+ str(ref_index)
-    ref_name = "frame-" + str(ref_index)
-    return  ref_name
+
 
 def createNetVlad():
     conf = {"model_name": "VGG16-NetVLAD-Pitts30K", "whiten": True}

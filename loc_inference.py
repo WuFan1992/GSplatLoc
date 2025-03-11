@@ -83,7 +83,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
             gt_t = view.T
 
             print(f"Match speed: {time.time() - start}")
-            feature_matching_time.append(time.time()-start)
+            #feature_matching_time.append(time.time()-start)
             _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K, 
                                                   distCoeffs=None, 
@@ -105,17 +105,17 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
                 prior_rErr.append(rotError)
                 prior_tErr.append(transError)
         
-        runing_time = time.time() - start_time 
+        #runing_time = time.time() - start_time 
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
         mean_inliers = np.mean(inliers) 
-        mean_match_time = np.mean(feature_matching_time)
+        #mean_match_time = np.mean(feature_matching_time)
         print(f"Rotation Average Error: {err_mean_rot} deg ")
         print(f"Translation Average Error: {err_mean_trans} cm ") 
         print(f"Mean inliers : {mean_inliers}  ")
-        print(f"Running time = ", runing_time)
-        print(f"Mean match time = ", mean_match_time)
+        #print(f"Running time = ", runing_time)
+        #print(f"Mean match time = ", mean_match_time)
         """
 
             w2c = torch.eye(4, 4, device='cuda')
