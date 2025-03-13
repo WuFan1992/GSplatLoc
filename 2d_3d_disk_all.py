@@ -38,6 +38,17 @@ from torch_dimcheck import dimchecked
 from submodules.disk.disk.model.disk import DISK
 from submodules.disk.disk.common.structs import Features
 
+
+"""
+This file is the complet version of 2d_3d_disk.py that launch direct 2D 3D macthing within all the test image 
+ command: 
+python 2d_3d_disk_all.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+
+we need to already train a 3DGS with disk feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
+Training image must be put in datasets/wholehead/
+
+"""
+
 class Image:
     def __init__(self, bitmap: ['C', 'H', 'W'], fname: str, orig_shape=None):
         self.bitmap     = bitmap

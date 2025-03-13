@@ -34,6 +34,16 @@ from utils.loc_utils import *
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
 
+"""
+This file is the complet version of 2d_3d_xfeat.py that launch direct 2D 3D macthing within all the test image 
+ command: 
+python 2d_3d_xfeat_all.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+
+we need to already train a 3DGS with xfeat feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
+Training image must be put in datasets/wholehead/
+
+"""
+
 
 def localize_set(model_path, name, views, gaussians, pipeline, background, args):
 

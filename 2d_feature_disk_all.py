@@ -52,6 +52,39 @@ from torch_dimcheck import dimchecked
 from submodules.disk.disk.model.disk import DISK
 from submodules.disk.disk.common.structs import Features
 
+""""
+This file is used to run the whole test cases and get the average error for disk feature
+It first gets the test image from the Scene. Apply the Disk detector to get the keypoints and descriptors
+The test image will then sent to NetVlad to get its global descriptor. This global descriptor will then be
+used to find its most similar image in training dataset (each image in training dataset are considered as 
+reference image)
+Once query image and reference image are found, we get the extrinsic and intrinsic parameters of reference image and then 
+Use these two paramters to project(rasterize) the 3DGS-Disk. We record each pixel in the projected feature map that correspond with a 
+3DGS point. Theses pixel with its feature are then used to match with the keypoint of query image.
+Once the matching is done, for each matching points in  projected image, we have its 3D coordinate so that we can directly apply PnP RANSAC 
+to 2D(query)-3D (3DGS)        
+The methods return the average of all the test image's pose error 
+
+command: 
+python 2d_feature_disk_all.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+
+we need to already train a 3DGS with disk feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
+Training image must be put in datasets/wholehead/
+
+If we want to use the netvlad to do the image retrieval, we must launch the getdes.py. Make sure that in the netvlad.py, 
+from netvlad.base_model import BaseModel must be 
+from base_model import BaseModel
+
+python getdes.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+
+Then after get the global descriptor, change the 
+from base_model import BaseModel
+back to  
+from netvlad.base_model import BaseModel 
+before runing the 2d_feature_disk_all.py
+
+"""
+
 
 class Image:
     def __init__(self, bitmap: ['C', 'H', 'W'], fname: str, orig_shape=None):

@@ -24,6 +24,8 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 from utils.graphics_utils import getWorld2View2, fov2focal
 
+from encoders.XFeat.modules.xfeat import XFeat
+
 from warping.warping_loss import *
 from warping.warp_utils import *
 from utils.loc_utils import *
@@ -43,75 +45,31 @@ import torch.nn as nn
 # // For the netvlad global descriptor
 from netvlad.netvlad import NetVLAD
 
-#//from torch.utils.data import DataLoader
-from tqdm import tqdm
-from torch_dimcheck import dimchecked
 
-from submodules.disk.disk.model.disk import DISK
-from submodules.disk.disk.common.structs import Features
+""""
+This file is used to get disk feature of a query image and show its matching with another image Ref via xfeat feature.
+The methods to get the Ref image can be achieved by NetVlad or mannuelly decided its index 
+
+command: 
+python 2d_feature_disk_one.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+
+we need to already train a 3DGS with disk feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
+Training image must be put in datasets/wholehead/
+
+If we want to use the netvlad to do the image retrieval, we must launch the getdes.py. Make sure that in the netvlad.py, 
+from netvlad.base_model import BaseModel must be 
+from base_model import BaseModel
+
+python getdes.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+
+Then after get the global descriptor, change the 
+from base_model import BaseModel
+back to  
+from netvlad.base_model import BaseModel 
+before runing the 2d_feature_disk_one.py
 
 
-class Image:
-    def __init__(self, bitmap: ['C', 'H', 'W'], fname: str, orig_shape=None):
-        self.bitmap     = bitmap
-        self.fname      = fname
-        if orig_shape is None:
-            self.orig_shape = self.bitmap.shape[1:]
-        else:
-            self.orig_shape = orig_shape
-
-    def resize_to(self, shape):
-        return Image(
-            self._pad(self._interpolate(self.bitmap, shape), shape),
-            self.fname,
-            orig_shape=self.bitmap.shape[1:],
-        )
-
-    @dimchecked
-    def to_image_coord(self, xys: [2, 'N']) -> ([2, 'N'], ['N']):
-        f, _size = self._compute_interpolation_size(self.bitmap.shape[1:])
-        scaled = xys / f
-
-        h, w = self.orig_shape
-        x, y = scaled
-
-        mask = (0 <= x) & (x < w) & (0 <= y) & (y < h)
-
-        return scaled, mask
-
-    def _compute_interpolation_size(self, shape):
-        x_factor = self.orig_shape[0] / shape[0]
-        y_factor = self.orig_shape[1] / shape[1]
-
-        f = 1 / max(x_factor, y_factor)
-
-        if x_factor > y_factor:
-            new_size = (shape[0], int(f * self.orig_shape[1]))
-        else:
-            new_size = (int(f * self.orig_shape[0]), shape[1])
-
-        return f, new_size
-
-    @dimchecked
-    def _interpolate(self, image: ['C', 'H', 'W'], shape) -> ['C', 'h', 'w']:
-        _f, size = self._compute_interpolation_size(shape)
-        return F.interpolate(
-            image.unsqueeze(0),
-            size=size,
-            mode='bilinear',
-            align_corners=False,
-        ).squeeze(0)
-    
-    @dimchecked
-    def _pad(self, image: ['C', 'H', 'W'], shape) -> ['C', 'h', 'w']:
-        x_pad = shape[0] - image.shape[1]
-        y_pad = shape[1] - image.shape[2]
-
-        if x_pad < 0 or y_pad < 0:
-            raise ValueError("Attempting to pad by negative value")
-
-        return F.pad(image, (0, y_pad, 0, x_pad))
-    
+"""
 
 
 class InterpolateSparse2d(nn.Module):
@@ -140,7 +98,35 @@ class InterpolateSparse2d(nn.Module):
         return x.permute(0,2,3,1).squeeze(-2)
 
 
+def pixel2ndc(pixel, S):
+    return (((pixel/0.5)+1.0)/S)-1.0
+
+def getOrigPoint(point_in_render_img, W, H, ProjMatrix):
+    pixel_x, pixel_y, proj_z, p_w = point_in_render_img[1], point_in_render_img[0], point_in_render_img[2], point_in_render_img[3]
+    p_proj_x, p_proj_y = pixel2ndc(pixel_x, W), pixel2ndc(pixel_y, H)
+    p_hom_x, p_hom_y, p_hom_z = p_proj_x/p_w, p_proj_y/p_w, proj_z/p_w
+    p_hom_w = 1/p_w
+    p_hom = np.array([p_hom_x, p_hom_y, p_hom_z,p_hom_w])
+    origP = np.matmul(p_hom, np.linalg.inv(ProjMatrix), dtype=np.float32)
+    origP = origP[:3]
+    print("ori = ", point_in_render_img[4], point_in_render_img[5],  point_in_render_img[6] )
+    return origP
+
+def getAllOrigPoints(points_in_render_img, W,H,ProjMatrix):
+    match_3d = []
+    for piri in points_in_render_img:
+        origP = getOrigPoint(piri, W,H,ProjMatrix)
+        match_3d.append(origP)
+    return match_3d
+
+def getXY(points):
+    res = []
+    for p in points:
+        res.append([p[0],p[1]])
+    return res
     
+    
+
 def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
     dst_points_xy = dst_points[:, [0,1]]
     # Calculate the Homography matrix
@@ -182,6 +168,36 @@ def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
     return img_matches, ref_points_valid, dst_points_valid
 
 
+def pixel_to_world(u, v, depth, K, R, t):
+    """
+    Converts pixel coordinates (u, v) to world coordinates (X, Y, Z).
+    
+    Args:
+    - u, v: Pixel coordinates in image space.
+    - depth: Depth (Z) of the pixel in the camera frame.
+    - K: Camera intrinsic matrix (3x3 tensor).
+    - R: Camera rotation matrix (3x3 tensor).
+    - t: Camera translation vector (3x1 tensor).
+    
+    Returns:
+    - X, Y, Z: World coordinates corresponding to the pixel (u, v).
+    """
+    # Step 1: Convert pixel (u, v) to normalized camera coordinates (x_c, y_c)
+    uv_homogeneous = torch.tensor([u, v, 1.0], dtype=torch.double)  # Homogeneous coordinates
+    uv_normalized = torch.matmul(torch.inverse(K), uv_homogeneous)
+    
+    x_c, y_c = uv_normalized[0], uv_normalized[1]  # Camera coordinates (normalized)
+
+    # Step 2: Convert to world coordinates
+    # Camera coordinates (x_c, y_c, Z) where Z is given by the depth
+    camera_coordinates = torch.tensor([x_c * depth, y_c * depth, depth], dtype=torch.double)
+
+    # Step 3: Apply the rotation and translation
+    world_coordinates = torch.matmul(R, camera_coordinates) + t
+
+    return world_coordinates
+
+
 
 def getIntrinsic(view):
     K = np.eye(3)
@@ -220,51 +236,7 @@ def imageRetrieval(query_img, netvlad_model,global_desc_names):
     num_seq = names[idx].split("/")[0]
     img_name = names[idx].split("/")[1]
     
-    return img_name, num_seq   
-
-def getKpDesc(model, dir, img_name):
-    img_path = os.path.join(dir, img_name)
-    print("img_path = ", img_path)
-    img = cv2.imread(img_path) # [H,W,C] = [480,640,3]
-
-    
-    img_tensor = torch.tensor(img).permute(2,0,1).cuda() # [C,H,W]
-    img_tensor = img_tensor / 255.0
-    
-    image_query = Image(img_tensor, img_name.split('.')[0])
-    
-    query_features = model.features(image_query.bitmap[None])
-
-    
-    kps_crop_space = query_features[0].kp.T
-    kps_img_space, mask = image_query.to_image_coord(kps_crop_space)
-    kps_img_space, mask = kps_img_space.cpu(), mask.cpu()
-    
-    keypoints   = kps_img_space.numpy().T[mask]
-    descriptors = query_features[0].desc.detach().cpu().numpy()[mask]
-    #scores      = query_features[0].kp_logp.detach().cpu().numpy()[mask]
-    return keypoints, descriptors, img, img_tensor  
-
-def disk_match(feats1, feats2, min_cossim = 0.82):
-    
-    cossim = feats1 @ feats2.t()
-    cossim_t = feats2 @ feats1.t()	
-    _, match12 = cossim.max(dim=1)
-    _, match21 = cossim_t.max(dim=1)
-    idx0 = torch.arange(len(match12), device=match12.device)
-    mutual = match21[match12] == idx0
-    
-    
-    if min_cossim > 0:
-        cossim, _ = cossim.max(dim=1)
-        good = cossim > min_cossim
-        idx0 = idx0[mutual & good]
-        idx1 = match12[mutual & good]
-    else:
-        idx0 = idx0[mutual]
-        idx1 = match12[mutual]
-        
-    return idx0, idx1
+    return img_name, num_seq     
 
 
 def localize_set(model_path, name, views, gaussians, pipeline, background, args):
@@ -280,37 +252,26 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
 
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
-
-        
-    default_model_path = os.path.split(os.path.abspath(__file__))[0] + '/submodules/disk/depth-save.pth'
-    state_dict = torch.load(default_model_path, map_location='cpu')
-    DEV   = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    CPU   = torch.device('cpu')
-    # compatibility with older model saves which used the 'extractor' name
-    if 'extractor' in state_dict:
-        weights = state_dict['extractor']
-    elif 'disk' in state_dict:
-        weights = state_dict['disk']
-    else:
-        raise KeyError('Incompatible weight file!')
-    model = DISK(window=8, desc_dim=128)
-    model.load_state_dict(weights)
-    model = model.to(DEV)
+    top_k = 10
+    xfeat = XFeat(top_k=top_k)
     
     #Load image
     img_dir_query = "./datasets/wholehead/images/seq-01"
     query_img_name = "frame-000005.color.png"
     query_img_name_noext = "frame-000005"
 
-
-    kp_query, desc_query, query_img, query_img_tensor = getKpDesc(model, img_dir_query, query_img_name)
-        
+    
+    
+    query_img_path = os.path.join(img_dir_query, query_img_name)
+    query_img = cv2.imread(query_img_path) # [H,W,C] = [480,640,3]
+    query_img_tensor = torch.tensor(query_img).permute(2,0,1).cuda() # [C,H,W]
+    query_img_tensor = query_img_tensor / 255.0
+    #query_img_tensor = torch.tensor(query_img).cuda() # [C,H,W]
+    
     #Load the global descriptor
     global_desc_names = torch.load("./netvlad/global_desc.pt")
     netvlad_model = createNetVlad()
-    #ref_name, ref_seq = imageRetrieval(query_img_tensor.to(torch.float), netvlad_model,global_desc_names)
-    ref_name = "frame-000006"
-    ref_seq = "seq-01"
+    ref_name, ref_seq = imageRetrieval(query_img_tensor.to(torch.float), netvlad_model,global_desc_names)
     ref_view = [ view for view in views if view.image_name == ref_name and view.seq_num == ref_seq]
     print("ref_view[0].img = ", ref_view[0].image_name)
     ref_seq_name = ref_seq + "/" + ref_name 
@@ -318,17 +279,27 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     
 
     
-    img_dir_ref = "./datasets/wholehead/images/" + ref_seq
-   
+    #==========================
+    img_dir_ref = "./datasets/wholehead/images/"
+    ref_img_path = os.path.join(img_dir_ref, ref_seq_name) + ".color.png"
+    #print("ref_img_path = ", ref_img_path)
+    ref_img = cv2.imread(ref_img_path)
+    #tensor_ref_img = xfeat.parse_input(ref_img) # [1,C,H,W] = [1,3,480,640]
+    #ref_keypoints, _, ref_feature = xfeat.detectAndCompute(tensor_ref_img, 
+    #                                                             top_k=top_k)[0].values()  
+    #====================================
     # Get the reference img pose
-    kp_ref, desc_ref, ref_img, _ = getKpDesc(model, img_dir_ref, ref_name +".color.png")
+
     
     # Extract sparse features
-    
+    tensor_query_img = xfeat.parse_input(query_img) # [1,C,H,W] = [1,3,480,640]
+    query_keypoints, _, query_feature = xfeat.detectAndCompute(tensor_query_img, 
+                                                                 top_k=top_k)[0].values()  #query_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
     # Get the reference img pose
     que = [ view for view in views if view.image_name == query_img_name_noext]
     # Get the reference R and t
     K_ref, K_query = getIntrinsic(ref_view[0]), getIntrinsic(que[0])
+
 
     
     render_pkg = render(ref_view[0], gaussians, pipeline, background)
@@ -339,14 +310,11 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     #------points_in_render_image [7,N] --------------#
     #-------------------------------------------------#
     feature_map, points_in_render_image,  depth_map = render_pkg["feature_map"], render_pkg["points_in_render_images"], render_pkg["depth"] 
-    #plt.imshow(render_pkg["render"].to("cpu").detach().permute(1,2,0).numpy())
-    #plt.show()
-    print(feature_map.shape)
-    feature_map = torch.nn.functional.normalize(feature_map,dim=0)
+    
 
     # Get the length of all the projected points
     proj_p_number = (points_in_render_image.shape[1] - torch.sum(points_in_render_image[0].eq(-1))).item()
-  
+    
     points = points_in_render_image.clone().detach()
     non_zero_dim = torch.any(points != 0, dim=0)
     non_zero_indices = torch.nonzero(non_zero_dim)
@@ -355,27 +323,20 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     proj_xy = proj_p_xyzw[:2].transpose(0,1)
     interpolator = InterpolateSparse2d('bicubic')
     chunck_size = 10000
-
     chunck = proj_xy[0: chunck_size]
     proj_p_feature  = interpolator(feature_map[None], chunck[None], 480, 640).squeeze()
-
     for part in range(chunck_size,proj_xy.shape[0], chunck_size ):
         chunck = proj_xy[part: part + chunck_size]
         proj_p_feature_temp  = interpolator(feature_map[None], chunck[None], 480, 640).squeeze()
         proj_p_feature = torch.cat((proj_p_feature, proj_p_feature_temp), 0)
 
     proj_p_xyzw = proj_p_xyzw.T
-
-    idxs0, idxs1 = disk_match(torch.tensor(desc_query), proj_p_feature.to("cpu"), min_cossim=0.82)
-    mkpts_0, mkpts_1 = kp_query[idxs0], proj_p_xyzw[idxs1]
-
-    canvas, query_points_valid, proj_points_valid = warp_corners_and_draw_matches(mkpts_0, mkpts_1.to("cpu").numpy(), query_img, ref_img)
     
-    print("query_points_valid = ", query_points_valid)
-    print("proj_points_valid = ", proj_points_valid)
-
+    idxs0, idxs1 = xfeat.match(query_feature.to("cpu"), proj_p_feature.to("cpu"), min_cossim=0.82 )
+    mkpts_0, mkpts_1 = query_keypoints[idxs0].cpu().numpy(), proj_p_xyzw[idxs1].cpu().numpy()
+    canvas, query_points_valid, proj_points_valid = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
+    
     ####################
-    """
     pp_idx = 1
     proj_p_feature = proj_p_feature.clone().detach()
     pcd_idx = torch.where(torch.all(torch.tensor(proj_points_valid[1]).to("cuda") == gaussian_pcd, dim=1))[0].item()
@@ -393,7 +354,6 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     print(output)
     output = torch.cosine_similarity(proj_p_feature[idxs1][pp_idx].to("cpu"), query_feature[idxs0][pp_idx].to("cpu"), dim=0)
     print(output)
-    """
     #################
     match_3d = proj_points_valid
     print("number of matching points = ", len(proj_points_valid))

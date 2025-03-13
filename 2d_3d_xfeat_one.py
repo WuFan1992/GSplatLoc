@@ -38,35 +38,18 @@ from matplotlib import cm
 from matplotlib import collections as mplcollections
 from matplotlib import colors as mcolors
 
+""""
+This file is used to get the xfeat feature(key point + descriptor) from query image. With the pre-trained 3DGS-xfeat (GsplatLoc). The keypoint detected in the
+query image will match with the xfeat feature stocked inside 3DGS directly  
 
+command: 
+python 2d_3d_xfeat.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
 
-def pixel2ndc(pixel, S):
-    return (((pixel/0.5)+1.0)/S)-1.0
+we need to already train a 3DGS with xfeat feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
+Training image must be put in datasets/wholehead/
 
-def getOrigPoint(point_in_render_img, W, H, ProjMatrix):
-    pixel_x, pixel_y, proj_z, p_w = point_in_render_img[1], point_in_render_img[0], point_in_render_img[2], point_in_render_img[3]
-    p_proj_x, p_proj_y = pixel2ndc(pixel_x, W), pixel2ndc(pixel_y, H)
-    p_hom_x, p_hom_y, p_hom_z = p_proj_x/p_w, p_proj_y/p_w, proj_z/p_w
-    p_hom_w = 1/p_w
-    p_hom = np.array([p_hom_x, p_hom_y, p_hom_z,p_hom_w])
-    origP = np.matmul(p_hom, np.linalg.inv(ProjMatrix), dtype=np.float32)
-    origP = origP[:3]
-    return origP
+"""
 
-def getAllOrigPoints(points_in_render_img, W,H,ProjMatrix):
-    match_3d = []
-    for piri in points_in_render_img:
-        origP = getOrigPoint(piri, W,H,ProjMatrix)
-        match_3d.append(origP)
-    return match_3d
-
-def getXY(points):
-    res = []
-    for p in points:
-        res.append([p[1],p[0]])
-    return res
-    
-    
 
 def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
     dst_points_xy = dst_points[:, [0,1]]
@@ -220,12 +203,11 @@ def localize_set(model_path, name, scenes, gaussians, pipeline, background, args
                     gaussian_pcd,
                     gaussian_feat
                 )
-        
-    print("match 2d = ", matched_2d)
-    print("match 3d = ", matched_3d)
+
     
     
     ##########################
+    """
     pcd_idx = torch.where(torch.all(torch.tensor(matched_3d[5]).to("cuda") == gaussian_pcd, dim=1))[0].item()
     p_feature = gaussian_feat[pcd_idx].to("cpu")
     
@@ -234,6 +216,7 @@ def localize_set(model_path, name, scenes, gaussians, pipeline, background, args
     
     output = torch.cosine_similarity(q_feature, p_feature, dim=0)
     print(output)
+    """
     ############################
 
     gt_R = que[0].R

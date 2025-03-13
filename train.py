@@ -39,6 +39,15 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 #////////////////////////
 
+"""
+python train.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+
+we need to already train a 3DGS with xfeat feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
+Training image must be put in datasets/wholehead/
+
+If we train with disk, we need to point out in the dataset_reader.py where to find the pre-extract disk feature
+
+"""
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
