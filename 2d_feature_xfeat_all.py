@@ -64,7 +64,7 @@ from base_model import BaseModel
 back to  
 from netvlad.base_model import BaseModel 
 before runing the 2d_feature_disk_all.py
-
+"""
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
