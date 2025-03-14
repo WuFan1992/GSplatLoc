@@ -47,9 +47,7 @@ def loadCam(args, id, cam_info, resolution_scale):
 
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
-
     resized_image_rgb = PILtoTorch(cam_info.image, resolution)
-
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
 
@@ -60,7 +58,6 @@ def loadCam(args, id, cam_info, resolution_scale):
     # Get the seq name 
     seq_num = os.path.normpath(cam_info.image_path).split(os.sep)[-2]
     
-
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,

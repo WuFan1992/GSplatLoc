@@ -289,7 +289,9 @@ renderCUDA(
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	float* __restrict__ out_feature_map,
-	float* __restrict__ out_depth) 
+	float* __restrict__ out_depth, 
+	float* __restrict__ xy_to_3D_ranges, 
+    int P) 
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -309,6 +311,15 @@ renderCUDA(
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x;
+
+	/*****************Fan WU*****************/
+	auto idx = cg::this_grid().thread_rank();
+	xy_to_3D_ranges[idx] = pix.x;
+	xy_to_3D_ranges[idx+P] = pix.y;
+	xy_to_3D_ranges[idx + 2*P] = range.x;
+	xy_to_3D_ranges[idx + 3*P] = range.y;
+
+	/***************************************/
 
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
@@ -425,7 +436,9 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color,
 	float* out_feature_map,
-	float* out_depth) 
+	float* out_depth, 
+    float* xy_to_3D_ranges, 
+    int P ) 
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -441,7 +454,9 @@ void FORWARD::render(
 		bg_color,
 		out_color,
 		out_feature_map,
-		out_depth);
+		out_depth,
+		xy_to_3D_ranges, 
+	    P);
 }
 
 void FORWARD::preprocess(int P, int D, int M,

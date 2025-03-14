@@ -39,8 +39,10 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
-    semantic_feature: torch.tensor 
-
+    semantic_feature: torch.tensor
+    ########### Fan WU ######### 
+    seq_num: int
+    ############################
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -110,6 +112,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         #image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_path = os.path.join(images_folder, extr.name)
         ##########################################
+        seq_num = extr.name.split("/")[0]
         image_name = os.path.basename(image_path).split(".")[0]
         
         try:
@@ -119,12 +122,16 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
             continue
       
         tensor_image = PILToTensor()(image)[None].float()
-      
-        semantic_feature = model.get_descriptors(tensor_image)[0]
+
+        #semantic_feature = model.get_descriptors(tensor_image)[0]
+        #feature_dir = images_folder + "/../../disk_feature/"+ seq_num
+        feature_dir = "C:\\Users\\fwu\\Documents\\PhD_FanWU\\PaperCode\\disk\\disk\\outputs\\"+ seq_num
+        semantic_feature_path = os.path.join(feature_dir, image_name) + '.color.pt'
+        semantic_feature = torch.load(semantic_feature_path)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
-                            semantic_feature=semantic_feature)
+                            semantic_feature=semantic_feature, seq_num=seq_num)
         
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
@@ -177,8 +184,12 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
 
 
     if eval:
-        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
-        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 2] 
+        #################### Fan WU ############
+        #train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
+        #test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 2] 
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if c.seq_num == "seq-01"]
+        test_cam_infos = [c for idx,  c in enumerate(cam_infos) if idx % 8 == 2 and c.seq_num == "seq-02"]
+        
     else:
         train_cam_infos = cam_infos
         test_cam_infos = []

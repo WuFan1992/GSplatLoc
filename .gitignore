@@ -23,6 +23,7 @@ datasets/pgt_*
 datasets/visloc_pseudo_gt_limitations
 datasets/_*
 datasets/images/
+datasets/
 datasets/sparse/
 7scenes_source/
 7scenes_sources/
@@ -32,3 +33,7 @@ visloc_pseudo_gt_limitations/
 #Build Files
 submodules/diff-gaussian-rasterization/build/
 submodules/simple-knn/build/
+
+logs/events.out.tfevents.1738074508.bprd-ithpc30.858353.0
+
+snapshot_fw.dump

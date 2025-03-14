@@ -16,6 +16,7 @@ os.path.dirname(os.path.abspath(__file__))
 
 setup(
     name="diff_gaussian_rasterization",
+    version='3.2',
     packages=['diff_gaussian_rasterization'],
     ext_modules=[
         CUDAExtension(
@@ -28,7 +29,11 @@ setup(
             "ext.cpp"],
             #extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]})
             ### To fix illegal memory issue
-            extra_compile_args={"nvcc": ["-Xcompiler", "-fno-gnu-unique", "-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]})
+            extra_compile_args={"nvcc": ["-Xcompiler", "-fno-gnu-unique", "-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/"), 
+                                         "-I" + "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/include/", 
+                                                                                              "-I" + "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/ucrt/", 
+                                                                                              "-I" + "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/", 
+                                                                                              "-I" + "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/shared/"]})
         ],
     cmdclass={
         'build_ext': BuildExtension

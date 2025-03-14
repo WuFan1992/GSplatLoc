@@ -220,6 +220,7 @@ int CudaRasterizer::Rasterizer::forward(
 	float* out_feature_map,
 	float* out_depth,
     float* points_in_render_image,
+	float* xy_to_3D_ranges,
 	int* radii,
 	bool debug)
 {
@@ -338,7 +339,9 @@ int CudaRasterizer::Rasterizer::forward(
 		background,
 		out_color,
 		out_feature_map,
-		out_depth), debug)
+		out_depth,
+	    xy_to_3D_ranges, 
+	    P), debug)
 
 	return num_rendered;
 }

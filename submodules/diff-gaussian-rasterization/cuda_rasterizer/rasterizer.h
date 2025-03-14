@@ -54,6 +54,7 @@ namespace CudaRasterizer
 			float* out_feature_map,
 			float* out_depth,
 			float* points_in_render_images,
+			float* xy_to_3D_ranges,
 			int* radii = nullptr,
 			bool debug = false
 			);

@@ -363,6 +363,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
     #------points_in_render_image [7,N] --------------#
     #-------------------------------------------------#
     feature_map, points_in_render_image,  depth_map = render_pkg["feature_map"], render_pkg["points_in_render_images"], render_pkg["depth"] 
+    xy_to_3d_ranges = render_pkg["xy_to_3D_ranges"]
+    print("xy_to_3d_ranges :", xy_to_3d_ranges)
     #plt.imshow(render_pkg["render"].to("cpu").detach().permute(1,2,0).numpy())
     #plt.show()
 

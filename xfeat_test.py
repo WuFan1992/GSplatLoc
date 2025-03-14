@@ -27,16 +27,19 @@ def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
 
     # Draw the warped corners in image2
     img2_with_corners = img2.copy()
+    '''
     for i in range(len(warped_corners)):
         start_point = tuple(warped_corners[i-1][0].astype(int))
         end_point = tuple(warped_corners[i][0].astype(int))
         cv2.line(img2_with_corners, start_point, end_point, (0, 255, 0), 4)  # Using solid green for corners
+    '''
 
     # Prepare keypoints and matches for drawMatches function
     keypoints1 = [cv2.KeyPoint(p[0], p[1], 5) for p in ref_points]
     keypoints2 = [cv2.KeyPoint(p[0], p[1], 5) for p in dst_points]
     matches = [cv2.DMatch(i,i,0) for i in range(len(mask)) if mask[i]]
-
+    print("keypoint1 len = ", len(keypoints1))
+    print("matches number = ", len(matches))
     # Draw inlier matches
     img_matches = cv2.drawMatches(img1, keypoints1, img2_with_corners, keypoints2, matches, None,
                                   matchColor=(0, 255, 0), flags=2)
@@ -140,34 +143,22 @@ class MultiFigure:
 
 
 # initialize the model 
-xfeat = XFeat(top_k=100)
+xfeat = XFeat(top_k=4096)
 
 #Load image
-img_dir = "./datasets/images/"
+img_dir = "./datasets/wholehead/images/seq-01"
 img_name_1 = "frame-000005.color.png"
-img_name_2 = "frame-000055.color.png"
+img_name_2 = "frame-000020.color.png"
+
 
 image_path_1 = os.path.join(img_dir, img_name_1)
 image_path_2 = os.path.join(img_dir, img_name_2)
 
-image_1 = Image.open(image_path_1)   # size = (640, 480)
-image_2 = Image.open(image_path_2)
-
-
-tensor_image_1 = PILToTensor()(image_1).float()
-tensor_image_2 = PILToTensor()(image_2).float()
-
-mkpts_0, mkpts_1 = xfeat.match_xfeat(tensor_image_1, tensor_image_2)
-mkpts_0 = torch.from_numpy(mkpts_0)
-mkpts_1 = torch.from_numpy(mkpts_1)
-
-print("mkpts_0 : ", mkpts_0)
-print("mkpts_1 : ", mkpts_1)
-
-
-fig = MultiFigure(tensor_image_1, tensor_image_2)
-fig.mark_xy(mkpts_0, mkpts_1)
-plt.show()
+im1, im2 = cv2.imread(image_path_1), cv2.imread(image_path_2)
+mkpts_0, mkpts_1 = xfeat.match_xfeat(im1, im2, top_k = 4096)
+canvas = warp_corners_and_draw_matches(mkpts_0, mkpts_1, im1, im2)
+plt.figure(figsize=(12,12))
+plt.imshow(canvas[..., ::-1]), plt.show()
 
 
 
