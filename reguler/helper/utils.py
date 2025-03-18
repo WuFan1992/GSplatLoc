@@ -56,10 +56,15 @@ def get_points_from_ranges(range, gaussian_pcd):
     return gaussian_pcd[int(range[0]): int(range[1])]
 
 def get_whole_points_from_ranges(ranges, gaussian_pcd):
-    return [get_points_from_ranges(range, gaussian_pcd) for range in ranges]
-
+    return [get_points_from_ranges(range, gaussian_pcd).detach() for range in ranges]
+    
 def get_whole_mass_center(all_points):
     return [calculate_mass_center(points) for points in all_points]
 
 def get_whole_mass_density(centers, points):
-    return [calculate_mass_density(centers[idx], points[idx]) for idx in range(len(centers))]    
+    return [calculate_mass_density(centers[idx], points[idx]) for idx in range(len(centers))]  
+
+def normalize_density(densities):
+    den_max, den_min = torch.max(densities), torch.min(densities)
+    range = den_max-den_min
+    return [(den-den_min)/range for den in densities]  

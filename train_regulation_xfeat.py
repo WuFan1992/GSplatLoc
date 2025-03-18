@@ -212,7 +212,6 @@ def get_match_3d_ranges(matched_2d, xy_to_3d_ranges, device="cuda"):
     match_mask = torch.all(diff == 0, dim=2)  # Check equality along the last dimension (x and y)
     # Get the indices of the matches
     matching_indices_list = match_mask.nonzero(as_tuple=True)[1].to("cpu").numpy() if device=="cuda" else match_mask.nonzero(as_tuple=True)[1].numpy()
-    print("matching indices list = ", matching_indices_list)
     return ranges[matching_indices_list]
 
 
@@ -324,6 +323,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
+    
 
         
     xfeat = XFeat(top_k=10)
@@ -381,12 +381,21 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         
         #Calculate the mass center of each range (correspondant to a series of points that raster a pixel)
         mass_centers = get_whole_mass_center(points)
+        mass_centers = torch.stack(mass_centers, dim=0)
         print("mass center =  ", mass_centers)
+        dist = torch.abs(torch.tensor(matched_3d).to("cuda")- mass_centers)
+        shift = torch.linalg.norm(dist, dim=1, ord=2)
+        print("shift = ", shift)
         
         #calculate the mass density of each range 
         mass_densities = get_whole_mass_density(query_keypoints_3d, points)
-        print("mass densities =  ", mass_densities)
-                
+
+        #Normalization density
+        mass_densities = torch.stack(mass_densities, dim=0)
+        mass_densities= normalize_density(mass_densities)
+        print("mass densities =  ", mass_densities)     
+        
+
     
         # Get the length of all the projected points
         proj_p_number = (points_in_render_image.shape[1] - torch.sum(points_in_render_image[0].eq(-1))).item()
