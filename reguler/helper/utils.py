@@ -1,4 +1,5 @@
 import torch 
+import numpy as np
 
 # Get the mass center of a list of points 
 # Points:  Tensor List ([[1,2,3], [14,25,36]...]) 
@@ -36,15 +37,29 @@ def calculate_radius(point_a, list_of_points_b):
 def calculate_mass_density(center, points):
     
     radius = calculate_radius(center, points)
-    # Calculate the area of the circle (π * radius^2)
-    area = torch.pi * radius ** 2
     
     # Compute the squared Euclidean distances between the points and the center
     distances = torch.norm(points - center, dim=1)
     
-    # Count the number of points within the given radius (distance <= radius)
-    count_within_radius = torch.sum(distances <= radius).item()
+   # Count the number of points within the radius
+    num_points_within_radius = torch.sum(distances <= radius).item()
     
-    # Calculate density
-    density = count_within_radius / area.item()
-    return density
+    # Calculate the volume of a sphere with the given radius
+    sphere_volume = (4/3) * np.pi * radius**3
+    
+    # Calculate the mass density as the number of points within the radius divided by the volume
+    mass_density = num_points_within_radius / sphere_volume
+    
+    return mass_density
+
+def get_points_from_ranges(range, gaussian_pcd):
+    return gaussian_pcd[int(range[0]): int(range[1])]
+
+def get_whole_points_from_ranges(ranges, gaussian_pcd):
+    return [get_points_from_ranges(range, gaussian_pcd) for range in ranges]
+
+def get_whole_mass_center(all_points):
+    return [calculate_mass_center(points) for points in all_points]
+
+def get_whole_mass_density(centers, points):
+    return [calculate_mass_density(centers[idx], points[idx]) for idx in range(len(centers))]    
