@@ -8,7 +8,7 @@ import numpy as np
 class PositionEncoder(nn.Module):
 
     def __init__(self, input_dim, N_freqs, max_freq, periodic_fns=[torch.sin, torch.cos],
-                 log_sampling=True, include_input=True, trainable=False):
+                 log_sampling=True, include_input=False, trainable=False):
         super().__init__()
 
         self.periodic_fns = periodic_fns
