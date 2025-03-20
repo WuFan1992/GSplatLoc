@@ -73,6 +73,9 @@ from matplotlib import colors as mcolors
 
 import torch.nn as nn
 
+from reguler.helper.utils import *
+from reguler.network import *
+
 
 
 class InterpolateSparse2d(nn.Module):
@@ -186,14 +189,14 @@ def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_
     
     return keypoints_matched, point_vis, point_vis_feature
 
-def get_match_gt_features(all_2d, matched_2d, all_feature, device="cuda"):
+def get_match_gt(all_2d, matched_2d, all_feature, all_3d, device="cuda"):
     
     diff = all_2d.unsqueeze(0).to(device) - matched_2d.unsqueeze(1).to(device)  # Reshape for broadcasting
     # Check where the difference is zero (i.e., exact match)
     match_mask = torch.all(diff == 0, dim=2)  # Check equality along the last dimension (x and y)
     # Get the indices of the matches
     matching_indices_list = match_mask.nonzero(as_tuple=True)[1].to("cpu").numpy() if device=="cuda" else match_mask.nonzero(as_tuple=True)[1].numpy()
-    return all_feature[matching_indices_list]
+    return all_3d[matching_indices_list], all_feature[matching_indices_list]
 
 """
 def get_match_gt_features(all_2d, matched_2d, all_feature, device="cuda"):
@@ -219,6 +222,9 @@ def get_match_3d_ranges(matched_2d, xy_to_3d_ranges, device="cuda"):
 def diff_tensor(network_output, gt, device="cuda"):
     diff = network_output.to(device) - gt.to(device)
     return torch.nn.functional.normalize(diff, dim=1)
+
+def l1_loss(network_output, gt):
+    return torch.abs((network_output - gt)).mean()
 
 
 def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
@@ -271,41 +277,6 @@ def getIntrinsic(view):
     K[1, 2] = view.image_height / 2
     return K
 
-def getRefImg(query_name):
-    #Get the image number
-    query_index = int(query_name.split("-")[1])
-    if query_index + 15 > 1000:
-        ref_index = query_index - 15
-    else:
-        ref_index = query_index + 15
-    if ref_index > 99:
-        ref_index = "000" + str(ref_index)
-    else:
-        ref_index = "0000"+ str(ref_index)
-    ref_name = "frame-" + str(ref_index)
-    return  ref_name
-
-def createNetVlad():
-    conf = {"model_name": "VGG16-NetVLAD-Pitts30K", "whiten": True}
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = NetVLAD(conf).eval().to(device)
-    
-    return model
-
-def imageRetrieval(query_img, netvlad_model,global_desc_names):
-    
-    global_desc, names = torch.squeeze(global_desc_names[0]), global_desc_names[1]
-    query_global_desc = netvlad_model(query_img[None])["global_descriptor"]
-    
-    similarity = torch.mm(query_global_desc, global_desc.t().cuda())
-    _, idx = similarity.max(dim=1)
-    
-    num_seq = names[idx].split("/")[0]
-    img_name = names[idx].split("/")[1]
-    
-    return img_name, num_seq
-    
 
 def localize_set(model_path, name, scene, gaussians, pipeline, background, args):
 
@@ -324,6 +295,9 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
     
+    config = Config()
+    refiner = Refiner(config)
+    optimizer = torch.optim.SGD(refiner.parameters(), lr=0.001, momentum=0.9)
 
         
     xfeat = XFeat(top_k=10)
@@ -331,9 +305,8 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     for _, view in enumerate(tqdm(views_train, desc="Rendering progress")):
         
         #Get the image name and image itself
-        query_name = view.image_name
+
         query_img = view.original_image[0:3, :, :]
-        query_seq = view.seq_num
         #Get the image R and t and the reference K
         query_R, query_t = view.R, view.T
         query_K = getIntrinsic(view)
@@ -352,10 +325,10 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         #-------------------------------------------------#
         feature_map, points_in_render_image,  depth_map = render_pkg["feature_map"], render_pkg["points_in_render_images"], render_pkg["depth"] 
         xy_to_3d_ranges = render_pkg["xy_to_3D_ranges"].detach().to("cpu")
+        np.savetxt("hello.txt", xy_to_3d_ranges.t().cpu().numpy())
                 
         query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), view.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
-        print("query_key points = ", query_keypoints)
-        print("query_key points 3d = ", query_keypoints_3d)
+        query_keypoints_3d = torch.stack(query_keypoints_3d, dim=0)
         with torch.no_grad():
             matched_2d, matched_3d, match_3d_feature = find_2d3d_correspondences(
                     query_keypoints,
@@ -364,38 +337,53 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
                     gaussian_feat
                 )
         #matched_2d, matched_3d, match_3d_feature = matched_2d, matched_3d.numpy(), match_3d_feature.numpy()
-        print("match_2d = ", matched_2d)
-        print("match_3d = ", matched_3d)
-        matched_gt_feature = get_match_gt_features(query_keypoints, torch.tensor(matched_2d), query_feature)
-        
+
+        matched_gt_3d, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
+        gt_diff_3d = matched_gt_3d - torch.tensor(matched_3d).to("cuda")
         
         diff_feature = diff_tensor(matched_gt_feature, torch.tensor(match_3d_feature))  # input 1 feature distance
         
         # Get the range (min point index to max point index) with given 2D point
         ranges = get_match_3d_ranges(torch.tensor(matched_2d), xy_to_3d_ranges)
-        print("ranges = ", ranges)
-        
+
         # Get a list of points correspondant with ranges
         points = get_whole_points_from_ranges(ranges, gaussian_pcd)
-        print("points = ", points)
+ 
         
         #Calculate the mass center of each range (correspondant to a series of points that raster a pixel)
         mass_centers = get_whole_mass_center(points)
         mass_centers = torch.stack(mass_centers, dim=0)
-        print("mass center =  ", mass_centers)
-        dist = torch.abs(torch.tensor(matched_3d).to("cuda")- mass_centers)
-        shift = torch.linalg.norm(dist, dim=1, ord=2)
-        print("shift = ", shift)
-        
-        #calculate the mass density of each range 
+
+        dist = torch.tensor(matched_3d).to("cuda")- mass_centers
+        #shift = torch.linalg.norm(dist, dim=1, ord=2)
+
+        #calculate the mass density of each range
+         
         mass_densities = get_whole_mass_density(query_keypoints_3d, points)
 
         #Normalization density
         mass_densities = torch.stack(mass_densities, dim=0)
         mass_densities= normalize_density(mass_densities)
-        print("mass densities =  ", mass_densities)     
+        
+        optimizer.zero_grad()
+        
+        pred_shift = refiner(diff_feature.cpu(), dist.cpu().to(torch.float32))
+        loss = l1_loss(pred_shift, gt_diff_3d.cpu())
+        loss.backward()
+        optimizer.step()
         
 
+        
+        
+        ############ Show image #################
+        print("matched 2d [1] = ", matched_2d[0])
+        torch.save(points[0].cpu(),"points.pt")
+        query_img = query_img.permute(1,2,0).cpu().numpy()
+        imgplot = plt.imshow(query_img)
+        plt.show()
+        
+        
+        
     
         # Get the length of all the projected points
         proj_p_number = (points_in_render_image.shape[1] - torch.sum(points_in_render_image[0].eq(-1))).item()
@@ -473,7 +461,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     print(f"Mean Pnp points : {mean_pnp_p}  ")
     print(f"Mean inliers : {mean_inliers} cm ")
     
-
+    
     
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 

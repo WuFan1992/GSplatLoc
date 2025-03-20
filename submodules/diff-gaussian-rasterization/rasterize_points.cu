@@ -75,7 +75,7 @@ RasterizeGaussiansCUDA(
 
     /*********Fan WU*************/
   torch::Tensor points_in_render_image = torch::full({7, P}, 0.0, float_opts);
-  torch::Tensor xy_to_3D_ranges = torch::full({4,P}, -1.0, float_opts);
+  torch::Tensor xy_to_3D_ranges = torch::full({6,H*W}, 0.0, float_opts);
    /*****************************/
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);

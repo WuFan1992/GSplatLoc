@@ -28,7 +28,7 @@ class Modulation(nn.Module):
 
     def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
         emb = self.linear2(self.silu(self.linear1(condition)))
-        scale, shift = torch.chunk(emb, 2, dim=0)
+        scale, shift = torch.chunk(emb, 2, dim=1)
         x = self.kp_encoder(x)
         x = x * (1 + scale) + shift   
         return x
@@ -65,7 +65,7 @@ class Refiner(nn.Module):
         pos_embed = self.embed(pos)
         #post processing position embedding dim from 60 to 128
         pos_embed = self.post_embed(pos_embed)
-        
+
         #fusion the feature map
         token = self.modulation(kp_feature, pos_embed)
         

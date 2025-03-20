@@ -276,6 +276,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 template <uint32_t CHANNELS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
+	const float* __restrict__ orig_points,  //########## Fan WU
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
 	int W, int H,
@@ -313,11 +314,10 @@ renderCUDA(
 	int toDo = range.y - range.x;
 
 	/*****************Fan WU*****************/
-	auto idx = cg::this_grid().thread_rank();
-	xy_to_3D_ranges[idx] = pix.x;
-	xy_to_3D_ranges[idx+P] = pix.y;
-	xy_to_3D_ranges[idx + 2*P] = range.x;
-	xy_to_3D_ranges[idx + 3*P] = range.y;
+	xy_to_3D_ranges[pix_id] = pix.x;
+	xy_to_3D_ranges[pix_id + H*W] = pix.y;
+	float MassCenter[3] = {0};
+
 
 	/***************************************/
 
@@ -351,6 +351,7 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			
 		}
 
 		block.sync();
@@ -358,6 +359,12 @@ renderCUDA(
 		// Iterate over current batch
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
+
+			//######## Fan WU ############
+			MassCenter[0] =  MassCenter[0] + orig_points[3 * collected_id[j]];
+			MassCenter[1] =  MassCenter[1] + orig_points[3 * collected_id[j] + 1];
+			MassCenter[2] =  MassCenter[2] + orig_points[3 * collected_id[j] + 2];
+
 			// Keep track of current position in range
 			contributor++;
 
@@ -401,8 +408,32 @@ renderCUDA(
 			// Keep track of last range entry to update this
 			// pixel.
 			last_contributor = contributor;
+	
 		}
 	}
+
+	float density[10000] = {1000.0};
+	float acc_density = 0.0;
+	//############# Fan WU ##############
+	for (int k = 0; k < toDo ; k++ )
+	{
+		int coll_id = point_list[range.x + k];
+		for (int m = k+1; m < toDo; m++)
+		{
+			int temp_id = point_list[range.x + m];
+			float diff_power = pow((double)(orig_points[3 * coll_id]-orig_points[3 * temp_id]), 2.0) +
+			pow((double)(orig_points[3 * coll_id+1]-orig_points[3 * temp_id+1]), 2.0) +
+			pow((double)(orig_points[3 * coll_id+2]-orig_points[3 * temp_id+2]), 2.0);
+			float diff = sqrt(diff_power);
+			if (diff < density[k])
+			{
+				density[k] = diff;
+			}
+		}
+		acc_density = acc_density + density[k];
+		
+	}
+
 
 	// All threads that treat valid pixel write out their final
 	// rendering data to the frame and auxiliary buffers.
@@ -419,9 +450,18 @@ renderCUDA(
 		for (int ch = 0; ch < NUM_SEMANTIC_CHANNELS; ch++)                 
 			out_feature_map[ch * H * W + pix_id] = SF[ch] + T * bg_color[ch];
 	}
+
+
+	/*****************Fan WU*****************/
+	xy_to_3D_ranges[pix_id + 2*H*W] = MassCenter[0]/toDo;
+	xy_to_3D_ranges[pix_id + 3*H*W] = MassCenter[1]/toDo;
+	xy_to_3D_ranges[pix_id + 4*H*W] = MassCenter[2]/toDo;
+	xy_to_3D_ranges[pix_id + 5*H*W] = acc_density/toDo;
+	/***************************************/
 }
 
 void FORWARD::render(
+	const float* orig_points,
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
 	const uint32_t* point_list,
@@ -441,6 +481,7 @@ void FORWARD::render(
     int P ) 
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
+		orig_points,
 		ranges,
 		point_list,
 		W, H,
