@@ -30,39 +30,18 @@ from warping.warping_loss import *
 from warping.warp_utils import *
 from utils.loc_utils import *
 import torch.nn.functional as F
+from random import randint
 
 
 
-""""
-This file is used to run the whole test cases and get the average error for xfeat feature
-It first gets the test image from the Scene. Apply the Xfeat detector to get the keypoints and descriptors
-The test image will then sent to NetVlad to get its global descriptor. This global descriptor will then be
-used to find its most similar image in training dataset (each image in training dataset are considered as 
-reference image)
-Once query image and reference image are found, we get the extrinsic and intrinsic parameters of reference image and then 
-Use these two paramters to project(rasterize) the 3DGS-Xfeat. We record each pixel in the projected feature map that correspond with a 
-3DGS point. Theses pixel with its feature are then used to match with the keypoint of query image.
-Once the matching is done, for each matching points in  projected image, we have its 3D coordinate so that we can directly apply PnP RANSAC 
-to 2D(query)-3D (3DGS)        
-The methods return the average of all the test image's pose error 
-
-command: 
-python 2d_feature_xfeat_all.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+"""
+python train_regulation_xfeat.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
 
 we need to already train a 3DGS with xfeat feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
 Training image must be put in datasets/wholehead/
 
-If we want to use the netvlad to do the image retrieval, we must launch the getdes.py. Make sure that in the netvlad.py, 
-from netvlad.base_model import BaseModel must be 
-from base_model import BaseModel
+If we train with disk, we need to point out in the dataset_reader.py where to find the pre-extract disk feature
 
-python getdes.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
-
-Then after get the global descriptor, change the 
-from base_model import BaseModel
-back to  
-from netvlad.base_model import BaseModel 
-before runing the 2d_feature_disk_all.py
 """
 
 
@@ -205,17 +184,17 @@ def get_match_gt_features(all_2d, matched_2d, all_feature, device="cuda"):
     matching_indices_list = torch.nonzero(matching_indices.all(dim=1), as_tuple=False).squeeze().tolist()
     return all_feature[matching_indices_list]
 """
-def get_match_3d_ranges(matched_2d, xy_to_3d_ranges, device="cuda"):
+def get_match_mass_center(matched_2d, xy_mass_center, device="cuda"):
 
-    xys = xy_to_3d_ranges.t()[:,:2]
-    ranges = xy_to_3d_ranges.t()[:,[2,3]]
+    xys = xy_mass_center.t()[:,:2]
+    massy_center = xy_mass_center.t()[:,[2,3,4]]
     
     diff = xys.unsqueeze(0).to(device) - matched_2d.unsqueeze(1).to(device)  # Reshape for broadcasting
     # Check where the difference is zero (i.e., exact match)
     match_mask = torch.all(diff == 0, dim=2)  # Check equality along the last dimension (x and y)
     # Get the indices of the matches
     matching_indices_list = match_mask.nonzero(as_tuple=True)[1].to("cpu").numpy() if device=="cuda" else match_mask.nonzero(as_tuple=True)[1].numpy()
-    return ranges[matching_indices_list]
+    return massy_center[matching_indices_list]
 
 
 
@@ -279,10 +258,11 @@ def getIntrinsic(view):
 
 
 def localize_set(model_path, name, scene, gaussians, pipeline, background, args):
-
-    views_test = scene.getTestCameras()
-    views_train = scene.getTrainCameras()
-
+   
+   
+    # constant iteration 
+    total_iter = 3000
+    
     # Keep track of rotation and translation errors for calculation of the median error.
     rErrs = []
     tErrs = []
@@ -297,37 +277,47 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     
     config = Config()
     refiner = Refiner(config)
-    optimizer = torch.optim.SGD(refiner.parameters(), lr=0.001, momentum=0.9)
+    optimizer = torch.optim.SGD(refiner.parameters(), lr=1.e-6)
 
         
     xfeat = XFeat(top_k=10)
+    
+    
+    # For the progress bar 
+    first_iter = 0
+    viewpoint_stack = None
+    progress_bar = tqdm(range(first_iter, total_iter), desc="Training progress")
+    first_iter += 1
         
-    for _, view in enumerate(tqdm(views_train, desc="Rendering progress")):
-        
-        #Get the image name and image itself
+    #for _, view in enumerate(tqdm(views_train, desc="Rendering progress")):
+    for iteration in range(first_iter, total_iter):
+           
+        # Pick a random Camera
+        if not viewpoint_stack:
+            viewpoint_stack = scene.getTrainCameras().copy()
+        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
 
-        query_img = view.original_image[0:3, :, :]
-        #Get the image R and t and the reference K
-        query_R, query_t = view.R, view.T
-        query_K = getIntrinsic(view)
+        query_img = viewpoint_cam.original_image[0:3, :, :]
+        query_img_name = viewpoint_cam.image_name
+        #Get the training camera view intrinsic
+        query_K = getIntrinsic(viewpoint_cam)
         
         # Extract sparse features    
         # # [1,C,H,W] = [1,3,480,640]
         query_keypoints, _, query_feature = xfeat.detectAndCompute(query_img[None], 
                                                                  top_k=10)[0].values()   #ref_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
         
-        render_pkg = render(view, gaussians, pipeline, background)
+        render_pkg = render(viewpoint_cam, gaussians, pipeline, background)
     
         #-------------------------------------------------#
         #----- points_in_image size [4,Number of points]--#
         #----- feature_map size [C,H,W] = [64,480,640]----#
         #------points_in_render_image [7,N] --------------#
         #-------------------------------------------------#
-        feature_map, points_in_render_image,  depth_map = render_pkg["feature_map"], render_pkg["points_in_render_images"], render_pkg["depth"] 
-        xy_to_3d_ranges = render_pkg["xy_to_3D_ranges"].detach().to("cpu")
-        np.savetxt("hello.txt", xy_to_3d_ranges.t().cpu().numpy())
+        depth_map = render_pkg["depth"] 
+        xy_mass_center = render_pkg["xy_to_3D_ranges"].detach().to("cpu")
                 
-        query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), view.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
+        query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), viewpoint_cam.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
         query_keypoints_3d = torch.stack(query_keypoints_3d, dim=0)
         with torch.no_grad():
             matched_2d, matched_3d, match_3d_feature = find_2d3d_correspondences(
@@ -343,125 +333,55 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         
         diff_feature = diff_tensor(matched_gt_feature, torch.tensor(match_3d_feature))  # input 1 feature distance
         
-        # Get the range (min point index to max point index) with given 2D point
-        ranges = get_match_3d_ranges(torch.tensor(matched_2d), xy_to_3d_ranges)
+        # Get the mass center with given 2D point
+        mass_centers = get_match_mass_center(torch.tensor(matched_2d), xy_mass_center)
 
-        # Get a list of points correspondant with ranges
-        points = get_whole_points_from_ranges(ranges, gaussian_pcd)
- 
-        
-        #Calculate the mass center of each range (correspondant to a series of points that raster a pixel)
-        mass_centers = get_whole_mass_center(points)
-        mass_centers = torch.stack(mass_centers, dim=0)
+        dist = torch.tensor(matched_3d)- mass_centers
 
-        dist = torch.tensor(matched_3d).to("cuda")- mass_centers
         #shift = torch.linalg.norm(dist, dim=1, ord=2)
 
         #calculate the mass density of each range
          
-        mass_densities = get_whole_mass_density(query_keypoints_3d, points)
+        #mass_densities = get_whole_mass_density(query_keypoints_3d, points)
 
         #Normalization density
-        mass_densities = torch.stack(mass_densities, dim=0)
-        mass_densities= normalize_density(mass_densities)
+        #mass_densities = torch.stack(mass_densities, dim=0)
+        #mass_densities= normalize_density(mass_densities)
         
         optimizer.zero_grad()
-        
         pred_shift = refiner(diff_feature.cpu(), dist.cpu().to(torch.float32))
         loss = l1_loss(pred_shift, gt_diff_3d.cpu())
+        print("loss = ", loss)
         loss.backward()
         optimizer.step()
+        
+        
+        with torch.no_grad():
+            # Progress bar
+            if iteration % 10 == 0:
+                progress_bar.set_postfix({"Loss": f"{loss.item():.{7}f}"})
+                progress_bar.update(10)
+            if iteration == total_iter:
+                progress_bar.close()
+
+            # Log and save 
+            if (iteration == total_iter):
+                print("\n[ITER {}] Saving Regulation".format(iteration))
+                torch.save(refiner.state_dict(), scene.model_path + "/regulation_" + str(iteration) + ".pth")
+  
         
 
         
         
         ############ Show image #################
+        """
         print("matched 2d [1] = ", matched_2d[0])
         torch.save(points[0].cpu(),"points.pt")
         query_img = query_img.permute(1,2,0).cpu().numpy()
         imgplot = plt.imshow(query_img)
         plt.show()
+        """
         
-        
-        
-    
-        # Get the length of all the projected points
-        proj_p_number = (points_in_render_image.shape[1] - torch.sum(points_in_render_image[0].eq(-1))).item()
-    
-        #Copy the points_in_render_image to avoid the grandient descent
-        points = points_in_render_image.clone().detach()
-        
-        #The colom is full zero if the 3D points project outside the image area
-        non_zero_dim = torch.any(points != 0, dim=0)
-        
-        #Get the non zero indice and then remove all rhe colom 
-        non_zero_indices = torch.nonzero(non_zero_dim)
-        proj_p_xyzw = points[:,non_zero_indices.squeeze()]
-
-        proj_xy = proj_p_xyzw[:2].transpose(0,1)
-        interpolator = InterpolateSparse2d('bicubic')
-        
-        
-        # Avoid to load all the keypoint coordinate at a time otherwise the CUDA will out of memory
-        chunck_size = 10000
-        chunck = proj_xy[0: chunck_size]
-        proj_p_feature  = interpolator(feature_map[None], chunck[None], 480, 640).squeeze()
-        for part in range(chunck_size,proj_xy.shape[0], chunck_size ):
-            chunck = proj_xy[part: part + chunck_size]
-            proj_p_feature_temp  = interpolator(feature_map[None], chunck[None], 480, 640).squeeze()
-            # Very rare case: the proj_p_feature_temps have only one feature with dim=64 so is [[64]] instead of [N,64]
-            if proj_p_feature_temp.dim()==1:
-                proj_p_feature_temp = proj_p_feature_temp[None]
-            proj_p_feature = torch.cat((proj_p_feature, proj_p_feature_temp), 0)
-            
-
-        proj_p_xyzw = proj_p_xyzw.T
-    
-        idxs0, idxs1 = xfeat.match(query_feature.to("cpu"), proj_p_feature.to("cpu"), min_cossim=0.82 )
-        mkpts_0, mkpts_1 = query_keypoints[idxs0].cpu().numpy(), proj_p_xyzw[idxs1].cpu().numpy()
-
-        #Transform the query and ref img to opencv format
-        query_img = query_img.permute(1,2,0).cpu().numpy()
-        ref_img = ref_img.permute(1,2,0).cpu().numpy()
-        query_points_valid, match_3d = warp_corners_and_draw_matches(mkpts_0, mkpts_1, query_img, ref_img)
-        
-        
-        num_match = len(match_3d)
-
-        _, R, t, inl = cv2.solvePnPRansac(np.array(match_3d), np.array(query_points_valid), 
-                                                      K_query, 
-                                                      distCoeffs=None, 
-                                                      flags=cv2.SOLVEPNP_ITERATIVE, 
-                                                      iterationsCount=args.ransac_iters,
-                                                      reprojectionError = 3.0
-                                                      )
-        R, _ = cv2.Rodrigues(R) 
-    
-        #print("R = ", R  , "  t= ", t)
-        #print("query R = ", query_R, "query t = ", query_t)
-        rotError, transError = calculate_pose_errors(query_R, query_t, R.T, t)
-
-        # Print the errors
-        print(f"Rotation Error: {rotError} deg")
-        print(f"Translation Error: {transError} cm")
-
-        if inl is not None:
-            prior_rErr.append(rotError)
-            prior_tErr.append(transError)
-            inliers.append(len(inl))
-            pnp_p.append(num_match)
-
-    
-    err_mean_rot =  np.mean(prior_rErr)
-    err_mean_trans = np.mean(prior_tErr)
-    mean_pnp_p = np.mean(pnp_p)
-    mean_inliers = np.mean(inliers) 
-    print(f"Rotation Average Error: {err_mean_rot} deg ")
-    print(f"Translation Average Error: {err_mean_trans} cm ")
-    print(f"Mean Pnp points : {mean_pnp_p}  ")
-    print(f"Mean inliers : {mean_inliers} cm ")
-    
-    
     
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 

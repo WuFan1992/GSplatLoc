@@ -412,6 +412,7 @@ renderCUDA(
 		}
 	}
 
+	/*
 	float density[10000] = {1000.0};
 	float acc_density = 0.0;
 	//############# Fan WU ##############
@@ -434,7 +435,7 @@ renderCUDA(
 		
 	}
 
-
+	*/
 	// All threads that treat valid pixel write out their final
 	// rendering data to the frame and auxiliary buffers.
 	if (inside)
@@ -453,10 +454,13 @@ renderCUDA(
 
 
 	/*****************Fan WU*****************/
-	xy_to_3D_ranges[pix_id + 2*H*W] = MassCenter[0]/toDo;
-	xy_to_3D_ranges[pix_id + 3*H*W] = MassCenter[1]/toDo;
-	xy_to_3D_ranges[pix_id + 4*H*W] = MassCenter[2]/toDo;
-	xy_to_3D_ranges[pix_id + 5*H*W] = acc_density/toDo;
+	if (abs(toDo) > 0)
+	{
+	xy_to_3D_ranges[pix_id + 2*H*W] = MassCenter[0]/abs(toDo);
+	xy_to_3D_ranges[pix_id + 3*H*W] = MassCenter[1]/abs(toDo);
+	xy_to_3D_ranges[pix_id + 4*H*W] = MassCenter[2]/abs(toDo);
+	xy_to_3D_ranges[pix_id + 5*H*W] = abs(toDo);
+	}
 	/***************************************/
 }
 
