@@ -184,17 +184,18 @@ def get_match_gt_features(all_2d, matched_2d, all_feature, device="cuda"):
     matching_indices_list = torch.nonzero(matching_indices.all(dim=1), as_tuple=False).squeeze().tolist()
     return all_feature[matching_indices_list]
 """
-def get_match_mass_center(matched_2d, xy_mass_center, device="cuda"):
+def get_match_mass_center_density(matched_2d, xy_mass_center, device="cuda"):
 
     xys = xy_mass_center.t()[:,:2]
     massy_center = xy_mass_center.t()[:,[2,3,4]]
+    density = xy_mass_center.t()[:,5]
     
     diff = xys.unsqueeze(0).to(device) - matched_2d.unsqueeze(1).to(device)  # Reshape for broadcasting
     # Check where the difference is zero (i.e., exact match)
     match_mask = torch.all(diff == 0, dim=2)  # Check equality along the last dimension (x and y)
     # Get the indices of the matches
     matching_indices_list = match_mask.nonzero(as_tuple=True)[1].to("cpu").numpy() if device=="cuda" else match_mask.nonzero(as_tuple=True)[1].numpy()
-    return massy_center[matching_indices_list]
+    return massy_center[matching_indices_list], density[matching_indices_list]
 
 
 
@@ -280,7 +281,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     optimizer = torch.optim.SGD(refiner.parameters(), lr=1.e-6)
 
         
-    xfeat = XFeat(top_k=10)
+    xfeat = XFeat(top_k=4096)
     
     
     # For the progress bar 
@@ -305,7 +306,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         # Extract sparse features    
         # # [1,C,H,W] = [1,3,480,640]
         query_keypoints, _, query_feature = xfeat.detectAndCompute(query_img[None], 
-                                                                 top_k=10)[0].values()   #ref_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
+                                                                 top_k=4096)[0].values()   #ref_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
         
         render_pkg = render(viewpoint_cam, gaussians, pipeline, background)
     
@@ -316,7 +317,8 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         #-------------------------------------------------#
         depth_map = render_pkg["depth"] 
         xy_mass_center = render_pkg["xy_to_3D_ranges"].detach().to("cpu")
-                
+
+                        
         query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), viewpoint_cam.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
         query_keypoints_3d = torch.stack(query_keypoints_3d, dim=0)
         with torch.no_grad():
@@ -331,12 +333,15 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         matched_gt_3d, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
         gt_diff_3d = matched_gt_3d - torch.tensor(matched_3d).to("cuda")
         
-        diff_feature = diff_tensor(matched_gt_feature, torch.tensor(match_3d_feature))  # input 1 feature distance
+        #diff_feature = diff_tensor(matched_gt_feature, torch.tensor(match_3d_feature))  # input 1 feature distance
         
         # Get the mass center with given 2D point
-        mass_centers = get_match_mass_center(torch.tensor(matched_2d), xy_mass_center)
+        mass_centers,density = get_match_mass_center_density(torch.tensor(matched_2d), xy_mass_center)
+        print("mass_center = ", mass_centers)
+        mass_center_density = torch.cat([mass_centers, torch.transpose(density[None], 0,1)], dim=1)
+        print("mass center density = ", mass_center_density)
 
-        dist = torch.tensor(matched_3d)- mass_centers
+        #dist = torch.tensor(matched_3d)- mass_centers
 
         #shift = torch.linalg.norm(dist, dim=1, ord=2)
 
@@ -349,8 +354,10 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         #mass_densities= normalize_density(mass_densities)
         
         optimizer.zero_grad()
-        pred_shift = refiner(diff_feature.cpu(), dist.cpu().to(torch.float32))
-        loss = l1_loss(pred_shift, gt_diff_3d.cpu())
+
+        pred_shift, gen_feature = refiner(torch.tensor(match_3d_feature), torch.tensor(mass_center_density).to(torch.float32))
+
+        loss = 0.6*l1_loss(pred_shift, gt_diff_3d.cpu()) + 0.4*l1_loss(gen_feature, matched_gt_feature.cpu())
         print("loss = ", loss)
         loss.backward()
         optimizer.step()
