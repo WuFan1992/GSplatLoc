@@ -14,6 +14,7 @@ from torchvision.transforms import PILToTensor
 
 # Regulation package
 from reguler.helper.utils import *
+from reguler.helper.transformer import *
 
 from scene import Scene
 from tqdm import tqdm
@@ -31,6 +32,15 @@ from warping.warp_utils import *
 from utils.loc_utils import *
 import torch.nn.functional as F
 from random import randint
+
+# For the log 
+import uuid
+from argparse import Namespace
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_FOUND = True
+except ImportError:
+    TENSORBOARD_FOUND = False
 
 
 
@@ -257,10 +267,32 @@ def getIntrinsic(view):
     K[1, 2] = view.image_height / 2
     return K
 
+def prepare_output_and_logger(args):    
+    if not args.model_path:
+        if os.getenv('OAR_JOB_ID'):
+            unique_str=os.getenv('OAR_JOB_ID')
+        else:
+            unique_str = str(uuid.uuid4())
+        args.model_path = os.path.join("./output/", unique_str[0:10])
+        
+    # Set up output folder
+    print("Output folder: {}".format(args.model_path))
+    os.makedirs(args.model_path, exist_ok = True)
+    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
+        cfg_log_f.write(str(Namespace(**vars(args))))
+
+    # Create Tensorboard writer
+    tb_writer = None
+    if TENSORBOARD_FOUND:
+        tb_writer = SummaryWriter(args.model_path)
+    else:
+        print("Tensorboard not available: not logging progress")
+    return tb_writer
+
 
 def localize_set(model_path, name, scene, gaussians, pipeline, background, args):
    
-   
+    tb_writer = prepare_output_and_logger(args)
     # constant iteration 
     total_iter = 3000
     
@@ -276,6 +308,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
     
+    lftr = LocalFeatureTransformer()
     config = Config()
     refiner = Refiner(config)
     optimizer = torch.optim.SGD(refiner.parameters(), lr=1.e-6)
@@ -307,7 +340,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         # # [1,C,H,W] = [1,3,480,640]
         query_keypoints, _, query_feature = xfeat.detectAndCompute(query_img[None], 
                                                                  top_k=4096)[0].values()   #ref_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
-        
+       
         render_pkg = render(viewpoint_cam, gaussians, pipeline, background)
     
         #-------------------------------------------------#
@@ -322,6 +355,10 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), viewpoint_cam.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
         query_keypoints_3d = torch.stack(query_keypoints_3d, dim=0)
         with torch.no_grad():
+            
+            query_feature = torch.squeeze(lftr(query_feature[None].cpu())).to("cuda")
+            query_feature = torch.nn.functional.normalize(query_feature,dim=0)
+
             matched_2d, matched_3d, match_3d_feature = find_2d3d_correspondences(
                     query_keypoints,
                     query_feature,
@@ -337,9 +374,9 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         
         # Get the mass center with given 2D point
         mass_centers,density = get_match_mass_center_density(torch.tensor(matched_2d), xy_mass_center)
-        print("mass_center = ", mass_centers)
+
         mass_center_density = torch.cat([mass_centers, torch.transpose(density[None], 0,1)], dim=1)
-        print("mass center density = ", mass_center_density)
+
 
         #dist = torch.tensor(matched_3d)- mass_centers
 
@@ -358,6 +395,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         pred_shift, gen_feature = refiner(torch.tensor(match_3d_feature), torch.tensor(mass_center_density).to(torch.float32))
 
         loss = 0.6*l1_loss(pred_shift, gt_diff_3d.cpu()) + 0.4*l1_loss(gen_feature, matched_gt_feature.cpu())
+        tb_writer.add_scalar("Loss/train", loss, iteration)
         print("loss = ", loss)
         loss.backward()
         optimizer.step()
@@ -377,7 +415,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
                 torch.save(refiner.state_dict(), scene.model_path + "/regulation_" + str(iteration) + ".pth")
   
         
-
+        tb_writer.flush()
         
         
         ############ Show image #################

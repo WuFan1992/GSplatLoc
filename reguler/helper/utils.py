@@ -58,7 +58,6 @@ def calculate_mass_density(center, points):
     return mass_density
 
 def get_points_from_ranges(range, gaussian_pcd):
-    print("range = ", range)
     return gaussian_pcd[int(range[0]): int(range[1])]
 
 def get_whole_points_from_ranges(ranges, gaussian_pcd):
