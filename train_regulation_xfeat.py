@@ -62,7 +62,7 @@ from matplotlib import colors as mcolors
 
 import torch.nn as nn
 
-from reguler.helper.utils import *
+
 from reguler.network import *
 
 
@@ -187,13 +187,7 @@ def get_match_gt(all_2d, matched_2d, all_feature, all_3d, device="cuda"):
     matching_indices_list = match_mask.nonzero(as_tuple=True)[1].to("cpu").numpy() if device=="cuda" else match_mask.nonzero(as_tuple=True)[1].numpy()
     return all_3d[matching_indices_list], all_feature[matching_indices_list]
 
-"""
-def get_match_gt_features(all_2d, matched_2d, all_feature, device="cuda"):
 
-    matching_indices = torch.isin(all_2d.to(device), matched_2d.to(device))
-    matching_indices_list = torch.nonzero(matching_indices.all(dim=1), as_tuple=False).squeeze().tolist()
-    return all_feature[matching_indices_list]
-"""
 def get_match_mass_center_density(matched_2d, xy_mass_center, device="cuda"):
 
     xys = xy_mass_center.t()[:,:2]
@@ -294,21 +288,11 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
    
     tb_writer = prepare_output_and_logger(args)
     # constant iteration 
-    total_iter = 3000
-    
-    # Keep track of rotation and translation errors for calculation of the median error.
-    rErrs = []
-    tErrs = []
-
-    prior_rErr = []
-    prior_tErr = []
-    pnp_p = []
-    inliers = []
-    
+    total_iter = 15000
+        
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
     
-    lftr = LocalFeatureTransformer()
     config = Config()
     refiner = Refiner(config)
     optimizer = torch.optim.SGD(refiner.parameters(), lr=1.e-6)
@@ -349,33 +333,28 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         #------points_in_render_image [7,N] --------------#
         #-------------------------------------------------#
         depth_map = render_pkg["depth"] 
-        xy_mass_center = render_pkg["xy_to_3D_ranges"].detach().to("cpu")
-
-                        
+        
+        #For each keypoint detected in query image, find its coordinate in 3DGS
         query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), viewpoint_cam.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
         query_keypoints_3d = torch.stack(query_keypoints_3d, dim=0)
         with torch.no_grad():
-            
-            query_feature = torch.squeeze(lftr(query_feature[None].cpu())).to("cuda")
-            query_feature = torch.nn.functional.normalize(query_feature,dim=0)
-
             matched_2d, matched_3d, match_3d_feature = find_2d3d_correspondences(
                     query_keypoints,
                     query_feature,
                     gaussian_pcd,
                     gaussian_feat
                 )
-        #matched_2d, matched_3d, match_3d_feature = matched_2d, matched_3d.numpy(), match_3d_feature.numpy()
 
         matched_gt_3d, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
-        gt_diff_3d = matched_gt_3d - torch.tensor(matched_3d).to("cuda")
+        
+        #gt_diff_3d = matched_gt_3d - torch.tensor(matched_3d).to("cuda")
         
         #diff_feature = diff_tensor(matched_gt_feature, torch.tensor(match_3d_feature))  # input 1 feature distance
         
         # Get the mass center with given 2D point
-        mass_centers,density = get_match_mass_center_density(torch.tensor(matched_2d), xy_mass_center)
+        #mass_centers,density = get_match_mass_center_density(torch.tensor(matched_2d), xy_mass_center)
 
-        mass_center_density = torch.cat([mass_centers, torch.transpose(density[None], 0,1)], dim=1)
+        #mass_center_density = torch.cat([mass_centers, torch.transpose(density[None], 0,1)], dim=1)
 
 
         #dist = torch.tensor(matched_3d)- mass_centers
@@ -390,12 +369,20 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
         #mass_densities = torch.stack(mass_densities, dim=0)
         #mass_densities= normalize_density(mass_densities)
         
+        cam_int = torch.Tensor(query_K).view(1,-1)
+        cam_ext_R = torch.reshape(torch.Tensor(viewpoint_cam.R), (1,9))
+        cam_ext_T = torch.reshape(torch.Tensor(viewpoint_cam.T), (1,3))
+        cam_ext = torch.cat([cam_ext_R, cam_ext_T], dim=1)  #1x12
+        cam_ext = torch.cat([cam_ext, torch.Tensor([[0,0,0,1]])], dim=1) #1x16
+
+        
+        pred_pos, gen_feature = refiner(torch.tensor(match_3d_feature), torch.tensor(matched_3d).to(torch.float32), cam_int, cam_ext)
+        print("matched 3d = ", matched_3d)
+        print("gen feature = ", gen_feature)
+        print("matched 3d feature = ", match_3d_feature)
         optimizer.zero_grad()
-
-        pred_shift, gen_feature = refiner(torch.tensor(match_3d_feature), torch.tensor(mass_center_density).to(torch.float32))
-
-        loss = 0.6*l1_loss(pred_shift, gt_diff_3d.cpu()) + 0.4*l1_loss(gen_feature, matched_gt_feature.cpu())
-        tb_writer.add_scalar("Loss/train", loss, iteration)
+        loss = 0.6*l1_loss(pred_pos, matched_gt_3d.cpu()) + 0.4*l1_loss(gen_feature, matched_gt_feature.cpu())
+        tb_writer.add_scalar("Loss/train_regulation", loss, iteration)
         print("loss = ", loss)
         loss.backward()
         optimizer.step()
