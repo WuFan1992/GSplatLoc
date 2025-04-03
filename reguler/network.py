@@ -5,16 +5,19 @@ import torch
 from reguler.helper.embedder import PositionEncoder
 from reguler.helper.utils import get_activation
 from typing import Optional
+from reguler.helper.transformer import LoFTREncoderLayer
 
 class Config:
     pos_in_channels : int = 3
     kp_in_channels: int = 64
     pos_N_freq: int = 10
     pos_max_freq: int = 9
-    fusion_channles: int = 256
-    post_embed_channels: int = 128
+    fusion_channles: int = 512
+    post_embed_channels: int = 256
     density_channel : int = 1
     mass_center_channel : int = 3
+    camera_embed_input_channel: int = 25
+    transformer_header_num : int = 4
     
 def weights_init_uniform(m):
     classname = m.__class__.__name__
@@ -26,24 +29,7 @@ def weights_init_uniform(m):
     
     
 
-class Modulation(nn.Module):
-    def __init__(self, embedding_dim: int, condition_dim: int, kp_feature_dim: int, single_layer: bool = False):
-        super().__init__()
-        self.silu = nn.SiLU()
-        if single_layer:
-            self.linear1 = nn.Identity()
-        else:
-            self.linear1 = nn.Linear(condition_dim, condition_dim)
 
-        self.linear2 = nn.Linear(condition_dim, embedding_dim * 2)
-        self.kp_encoder = nn.Linear(kp_feature_dim, embedding_dim)
-
-    def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        emb = self.linear2(self.silu(self.linear1(condition)))
-        scale, shift = torch.chunk(emb, 2, dim=1)
-        x = self.kp_encoder(x)
-        x = x * (1 + scale) + shift   
-        return x
 
 """
  A standard MLP layer 
@@ -100,6 +86,8 @@ class MLP(nn.Module):
             return nn.LeakyReLU(inplace=True)
         else:
             raise NotImplementedError
+        
+
 
 
 
@@ -124,39 +112,117 @@ class ShiftEstimator(nn.Module):
         self.layer = nn.Linear(intput_channel, 3)
     
     def forward(self, x: torch.Tensor):
-        return self.activation(self.layer(x))    
+        return self.activation(self.layer(x))   
+    
+    
+class FeatureEstimator(nn.Module):
+    def __init__(self, intput_channel: int):
+        super(FeatureEstimator, self).__init__()
+        self.activation = nn.Tanh()
+        self.layer = nn.Linear(intput_channel, 64)
+    
+    def forward(self, x: torch.Tensor):
+        return self.activation(self.layer(x))   
 
 class Refiner(nn.Module):
     def __init__(self, config: Config):
         super(Refiner, self).__init__()
-        self.embed = PositionEncoder(config.pos_in_channels, config.pos_N_freq, config.pos_max_freq)
+        """
+        Reference to "NeRF" Position Embedding 
+        input [x,y,z], dim = 3
+        output: dim = 60
+        """
+        self.embed = PositionEncoder(config.pos_in_channels, config.pos_N_freq, config.pos_max_freq) # (3,10,10)
         embed_output_dim = self.embed.out_dim 
-        self.post_embed = MLP(embed_output_dim, config.post_embed_channels, config.post_embed_channels, 2, "LeakyReLU", output_activation="relu")
-        self.pre_kp_features = MLP(config.kp_in_channels, config.kp_in_channels, config.kp_in_channels, 4,"LeakyReLU", output_activation="relu")
-        self.process_density = MLP(config.density_channel+config.mass_center_channel,  config.post_embed_channels, config.post_embed_channels, 1, "silu")
+        """
+        Reference to "NeRF"  backbone module:
+          project position embedding to higher dimension
+          1 x Linear, No activation
+          input : dim = 60
+          output : dim = 256 (The same as position embedding in NeRF and in LOFTR )
+        """
+        self.post_embed = nn.Linear(embed_output_dim, config.post_embed_channels)
+        
+        #self.post_embed = MLP(embed_output_dim, config.post_embed_channels, config.post_embed_channels, 1, "silu")
+        
+        """
+        xfeat dim = 64 ---> dim = 256
+        
+        """
+        self.pre_kp_feature = nn.Linear(config.kp_in_channels, config.post_embed_channels)
+
+        """
+        Reference to "Triplane meets Gaussian Splatting " camera embedding module:
+        project camera extrinsic and intrinsic to higher dimension
+         1 x Linear, 1 x activation (silu), 1 x Linear
+          input : dim = 25
+          output : dim = 256 (The same as position embedding in NeRF and in LOFTR )
+        """
+        self.camera_embed = MLP(config.camera_embed_input_channel, config.post_embed_channels, config.post_embed_channels, 1, "silu")
+        
+        """
+        Reference to "LOFTR" and "Triplane meets Gaussian"
+        4 layers transformer(with modulation)(LOFTR) 
+        input : dim = 256
+        output: dim = 256
+        header = 4
+        """
+        self.self_atten = LoFTREncoderLayer(config.fusion_channles, config.post_embed_channels, config.transformer_header_num)
+        
+        """
+        Regress the final position
+        1 x linear , 1 x activation (relu), 1x Linear 
+        input : dim = 256
+        hidden : dim = 1024  (projet to higher dimension)
+        output : dim = 3
+        """
+        self.estim_pos = MLP(config.post_embed_channels, 3,1024, 1, "relu")
+        
+        """
+        Regress the final descriptor
+        4 x mlp 
+        input : dim = 256
+        hidden : dim = 1024  (projet to higher dimension)
+        output : dim = 64
+        """
+        self.estim_feature = MLP(config.post_embed_channels, 64,1024, 4, "relu")
+        
+        
+        #self.process_density = MLP(config.density_channel+config.mass_center_channel,  config.post_embed_channels, config.post_embed_channels, 1, "silu")
         #self.post_embed.apply(weights_init_uniform)
-        self.modulation = Modulation(config.fusion_channles, config.post_embed_channels, config.kp_in_channels)
         #self.modulation.apply(weights_init_uniform)
-        self.shift_estimator = ShiftEstimator(config.fusion_channles)
-        self.feature_updator = MLP(config.fusion_channles, config.kp_in_channels, config. kp_in_channels, 4,"LeakyReLU", output_activation="relu")
+        #self.shift_estimator = ShiftEstimator(config.fusion_channles)
+        #self.feature_updator = MLP(config.fusion_channles, config.kp_in_channels, config. kp_in_channels, 4,"LeakyReLU")
+        #self.feature_updator = FeatureEstimator(config.fusion_channles)
         #self.shift_estimator.apply(weights_init_uniform)
     
-    def forward(self, kp_feature: torch.Tensor, mass_den: torch.Tensor) ->float:
+    def forward(self, kp_feature: torch.Tensor, pos: torch.Tensor, cam_intr: torch.Tensor, cam_extr: torch.Tensor) ->float:
+        
         
         # position embedding
-
-        #pos_embed = self.embed(pos)
+        pos_embed = self.embed(pos)
  
-        #post processing position embedding dim from 60 to 128
-        #pos_embed = self.post_embed(pos_embed)
-        mass_den_embed = self.process_density(mass_den)
-        
-        #fusion the feature map
-        kp_feature = self.pre_kp_features(kp_feature)
-        token = self.modulation(kp_feature, mass_den_embed)
+        #post processing position embedding dim from 60 to 256
+        pos_embed = self.post_embed(pos_embed)
 
+        #fusion the feature map
+        kp_feature = self.pre_kp_feature(kp_feature)
+        
+        # catenate position encoding and xfeat feature
+        kp_pos_encod = torch.cat([pos_embed, kp_feature], dim=1)
+        
+        # prepare camera embedding input
+        cam_data = torch.cat([cam_intr, cam_extr], dim=1)
+        cam_data = self.camera_embed(cam_data)
+        
+        # self attention condition with 
+        token = self.self_atten(kp_pos_encod, kp_pos_encod, cam_data)
+        
         #estimate shift
-        shift = self.shift_estimator(token)
-        feature = self.feature_updator(token)
+        shift = self.estim_pos(token)
+        feature = self.estim_feature(token)
 
         return shift, feature
+
+
+

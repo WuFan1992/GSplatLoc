@@ -2,6 +2,7 @@ import copy
 import torch
 import torch.nn as nn
 from .linear_attention import LinearAttention, FullAttention
+from .modulation import Modulation
 
 
 class Transformer_Config:
@@ -10,13 +11,16 @@ class Transformer_Config:
     attention: str = "linear"
     
 
-
 class LoFTREncoderLayer(nn.Module):
     def __init__(self,
+                 input_dim,
                  d_model,
                  nhead,
                  attention='linear'):
         super(LoFTREncoderLayer, self).__init__()
+        
+        # Afrer cat pos and feature, dim = 512, we need to mlp to project it into dim=256
+        self.adapdim = nn.Linear(input_dim, d_model)
 
         self.dim = d_model // nhead
         self.nhead = nhead
@@ -36,18 +40,46 @@ class LoFTREncoderLayer(nn.Module):
         )
 
         # norm and dropout
+        self.norm0 = nn.LayerNorm(d_model)
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
-
-    def forward(self, x, source, x_mask=None, source_mask=None):
+        
+        # modulation
         """
+        Reference to  "Triplane meets Gaussian" Dinov2Layer implementation
+        Architecture: 2 modulation model 
+        
+        """
+        self.modulation1 = Modulation(d_model, d_model, zero_init=True, single_layer=True)
+        self.modulation2 = Modulation(d_model, d_model, zero_init=True, single_layer=True)
+
+    def forward(self, x, source, modulation_cond, x_mask=None, source_mask=None):
+        """
+        Reference to "Triplane meets Gaussian " Dinov2Layer implementation, the order of 
+        feedforward:
+             * normalization feature
+             * apply modulation with camera embedding
+             * self attention
+             * self attention output + original feature -->  (1)
+             * normalization (1) ---> (2)
+             * apply modulation with (2)
+             * mlp  (3)
+             * (2) + (3) 
+        
         Args:
             x (torch.Tensor): [N, L, C]
             source (torch.Tensor): [N, S, C]
             x_mask (torch.Tensor): [N, L] (optional)
             source_mask (torch.Tensor): [N, S] (optional)
         """
+        x, source = self.adapdim(x)[None], self.adapdim(source)[None]
         bs = x.size(0)
+        # norm 
+        x, source = self.norm0(x), self.norm0(source)
+        #modulation
+        x = self.modulation1(x, modulation_cond)
+        source = self.modulation1(source, modulation_cond)
+        # get q k v
         query, key, value = x, source, source
 
         # multi-head attention
@@ -57,6 +89,7 @@ class LoFTREncoderLayer(nn.Module):
         message = self.attention(query, key, value, q_mask=x_mask, kv_mask=source_mask)  # [N, L, (H, D)]
         message = self.merge(message.view(bs, -1, self.nhead*self.dim))  # [N, L, C]
         message = self.norm1(message)
+        message = self.modulation2(message, modulation_cond)
 
         # feed-forward network
         message = self.mlp(torch.cat([x, message], dim=2))
@@ -69,14 +102,15 @@ class LoFTREncoderLayer(nn.Module):
 class LocalFeatureTransformer(nn.Module):
     """A Local Feature Transformer (LoFTR) module."""
 
-    def __init__(self):
+    def __init__(self, num_layer):
         super(LocalFeatureTransformer, self).__init__()
 
         self.config = Transformer_Config()
         self.d_model = self.config.dim_model
         self.num_head = self.config.num_head
         self.attention = self.config.attention
-        self.encoder_layer = LoFTREncoderLayer(self.d_model, self.num_head, self.attention)
+        encoder_layer = LoFTREncoderLayer(self.d_model, self.num_head, self.attention)
+        self.layers = nn.ModuleList([copy.deepcopy(encoder_layer) for _ in range(num_layer)])
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -92,7 +126,7 @@ class LocalFeatureTransformer(nn.Module):
         """
 
         assert self.d_model == feat.size(2), "the feature number of src and transformer must be equal"
-        feat = self.encoder_layer(feat, feat, mask, mask)
-        
+        for layer in self.layers:
+            feat = layer(feat, feat, mask, mask)  
         return feat
 
