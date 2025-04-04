@@ -211,46 +211,6 @@ def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
 
 
-def warp_corners_and_draw_matches(ref_points, dst_points, img1, img2):
-    dst_points_xy = dst_points[:, [0,1]]
-    # Calculate the Homography matrix
-    H, mask = cv2.findHomography(ref_points, dst_points, cv2.USAC_MAGSAC, 3.5, maxIters=1_000, confidence=0.999)
-    mask = mask.flatten()
-
-    # Get corners of the first image (image1)
-    h, w = img1.shape[:2]
-    corners_img1 = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], dtype=np.float32).reshape(-1, 1, 2)
-
-    # Warp corners to the second image (image2) space
-    warped_corners = cv2.perspectiveTransform(corners_img1, H)
-
-    # Draw the warped corners in image2
-    img2_with_corners = img2.copy()
-    for i in range(len(warped_corners)):
-        start_point = tuple(warped_corners[i-1][0].astype(int))
-        end_point = tuple(warped_corners[i][0].astype(int))
-        cv2.line(img2_with_corners, start_point, end_point, (0, 255, 0), 4)  # Using solid green for corners
-
-    # Prepare keypoints and matches for drawMatches function
-    keypoints1 = [cv2.KeyPoint(p[0], p[1], 5) for p in ref_points]
-    keypoints2 = [cv2.KeyPoint(p[0], p[1], 5) for p in dst_points]
-    matches = [cv2.DMatch(i,i,0) for i in range(len(mask)) if mask[i]]
-
-    # Draw inlier matches
-   # img_matches = cv2.drawMatches(img1, keypoints1, img2_with_corners, keypoints2, matches, None,
-   #                               matchColor=(0, 255, 0), flags=2)
-    
-    #clean the keypoint with mask
-    ref_points_valid = []
-    match_3d_points = []
-    for i in range(len(mask)):
-        if mask[i]:
-            ref_points_valid.append(ref_points[i])
-            match_3d_points.append(dst_points[i, [4,5,6]])
-
-    return  ref_points_valid, match_3d_points
-
-
 
 
 def getIntrinsic(view):
@@ -288,7 +248,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
    
     tb_writer = prepare_output_and_logger(args)
     # constant iteration 
-    total_iter = 15000
+    total_iter = 900
         
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
@@ -299,7 +259,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
 
         
     xfeat = XFeat(top_k=4096)
-    
+    saving_itr = np.arange(100,total_iter+100,100)
     
     # For the progress bar 
     first_iter = 0
@@ -308,80 +268,74 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
     first_iter += 1
         
     #for _, view in enumerate(tqdm(views_train, desc="Rendering progress")):
-    for iteration in range(first_iter, total_iter):
-           
-        # Pick a random Camera
+    for iteration in range(first_iter, total_iter+1):
+        
+         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-
-        query_img = viewpoint_cam.original_image[0:3, :, :]
-        query_img_name = viewpoint_cam.image_name
-        #Get the training camera view intrinsic
-        query_K = getIntrinsic(viewpoint_cam)
+        #get batch viewpoint_cam batch size = 16:
+        batch_viewpoint_cam = []
+        for _ in range(16):
+            if len(viewpoint_stack) == 0:
+                break
+            batch_viewpoint_cam.append(viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1)))
+            
+        loss = 0   
+        for viewpoint_cam in batch_viewpoint_cam:
+            query_img = viewpoint_cam.original_image[0:3, :, :]
+            query_img_name = viewpoint_cam.image_name
+            #Get the training camera view intrinsic
+            query_K = getIntrinsic(viewpoint_cam)
         
-        # Extract sparse features    
-        # # [1,C,H,W] = [1,3,480,640]
-        query_keypoints, _, query_feature = xfeat.detectAndCompute(query_img[None], 
+            # Extract sparse features    
+            # # [1,C,H,W] = [1,3,480,640]
+            query_keypoints, _, query_feature = xfeat.detectAndCompute(query_img[None], 
                                                                  top_k=4096)[0].values()   #ref_keypoints size = [top_k, 2] x-->W y-->H x and y are display coordinate
        
-        render_pkg = render(viewpoint_cam, gaussians, pipeline, background)
+            render_pkg = render(viewpoint_cam, gaussians, pipeline, background)
     
-        #-------------------------------------------------#
-        #----- points_in_image size [4,Number of points]--#
-        #----- feature_map size [C,H,W] = [64,480,640]----#
-        #------points_in_render_image [7,N] --------------#
-        #-------------------------------------------------#
-        depth_map = render_pkg["depth"] 
+            #-------------------------------------------------#
+            #----- points_in_image size [4,Number of points]--#
+            #----- feature_map size [C,H,W] = [64,480,640]----#
+            #------points_in_render_image [7,N] --------------#
+            #-------------------------------------------------#
+            depth_map = render_pkg["depth"] 
         
-        #For each keypoint detected in query image, find its coordinate in 3DGS
-        query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), viewpoint_cam.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
-        query_keypoints_3d = torch.stack(query_keypoints_3d, dim=0)
-        with torch.no_grad():
-            matched_2d, matched_3d, match_3d_feature = find_2d3d_correspondences(
-                    query_keypoints,
-                    query_feature,
-                    gaussian_pcd,
-                    gaussian_feat
+            #For each keypoint detected in query image, find its coordinate in 3DGS
+            query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), viewpoint_cam.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
+            query_keypoints_3d = torch.stack(query_keypoints_3d, dim=0)
+            with torch.no_grad():
+                matched_2d, matched_3d, match_3d_feature = find_2d3d_correspondences(
+                        query_keypoints,
+                        query_feature,
+                        gaussian_pcd,
+                        gaussian_feat
                 )
+                _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
+                                                  query_K, 
+                                                  distCoeffs=None, 
+                                                  flags=cv2.SOLVEPNP_ITERATIVE, 
+                                                  iterationsCount=args.ransac_iters
+                                                  )
+            
+                R, _ = cv2.Rodrigues(R)
+                
 
-        matched_gt_3d, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
+
+            matched_gt_3d, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
         
-        #gt_diff_3d = matched_gt_3d - torch.tensor(matched_3d).to("cuda")
         
-        #diff_feature = diff_tensor(matched_gt_feature, torch.tensor(match_3d_feature))  # input 1 feature distance
-        
-        # Get the mass center with given 2D point
-        #mass_centers,density = get_match_mass_center_density(torch.tensor(matched_2d), xy_mass_center)
-
-        #mass_center_density = torch.cat([mass_centers, torch.transpose(density[None], 0,1)], dim=1)
-
-
-        #dist = torch.tensor(matched_3d)- mass_centers
-
-        #shift = torch.linalg.norm(dist, dim=1, ord=2)
-
-        #calculate the mass density of each range
-         
-        #mass_densities = get_whole_mass_density(query_keypoints_3d, points)
-
-        #Normalization density
-        #mass_densities = torch.stack(mass_densities, dim=0)
-        #mass_densities= normalize_density(mass_densities)
-        
-        cam_int = torch.Tensor(query_K).view(1,-1)
-        cam_ext_R = torch.reshape(torch.Tensor(viewpoint_cam.R), (1,9))
-        cam_ext_T = torch.reshape(torch.Tensor(viewpoint_cam.T), (1,3))
-        cam_ext = torch.cat([cam_ext_R, cam_ext_T], dim=1)  #1x12
-        cam_ext = torch.cat([cam_ext, torch.Tensor([[0,0,0,1]])], dim=1) #1x16
+            cam_int = torch.Tensor(query_K).view(1,-1)
+            cam_ext_R = torch.reshape(torch.Tensor(R), (1,9))
+            cam_ext_T = torch.reshape(torch.Tensor(t), (1,3))
+            cam_ext = torch.cat([cam_ext_R, cam_ext_T], dim=1)  #1x12
+            cam_ext = torch.cat([cam_ext, torch.Tensor([[0,0,0,1]])], dim=1) #1x16
 
         
-        pred_pos, gen_feature = refiner(torch.tensor(match_3d_feature), torch.tensor(matched_3d).to(torch.float32), cam_int, cam_ext)
-        print("matched 3d = ", matched_3d)
-        print("gen feature = ", gen_feature)
-        print("matched 3d feature = ", match_3d_feature)
+            pred_pos, gen_feature = refiner(torch.tensor(match_3d_feature), torch.tensor(matched_3d).to(torch.float32), cam_int, cam_ext)
+            loss += 0.6*l1_loss(pred_pos, matched_gt_3d.cpu()) + 0.4*l1_loss(gen_feature, matched_gt_feature.cpu())
         optimizer.zero_grad()
-        loss = 0.6*l1_loss(pred_pos, matched_gt_3d.cpu()) + 0.4*l1_loss(gen_feature, matched_gt_feature.cpu())
+        loss = loss /(len(batch_viewpoint_cam))
         tb_writer.add_scalar("Loss/train_regulation", loss, iteration)
         print("loss = ", loss)
         loss.backward()
@@ -397,23 +351,13 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
                 progress_bar.close()
 
             # Log and save 
-            if (iteration == total_iter):
+            if (iteration in saving_itr):
                 print("\n[ITER {}] Saving Regulation".format(iteration))
                 torch.save(refiner.state_dict(), scene.model_path + "/regulation_" + str(iteration) + ".pth")
   
         
         tb_writer.flush()
-        
-        
-        ############ Show image #################
-        """
-        print("matched 2d [1] = ", matched_2d[0])
-        torch.save(points[0].cpu(),"points.pt")
-        query_img = query_img.permute(1,2,0).cpu().numpy()
-        imgplot = plt.imshow(query_img)
-        plt.show()
-        """
-        
+                
     
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 
