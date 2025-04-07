@@ -1,6 +1,6 @@
 import torch
-import torch.nn
-from typing import Optional
+import torch.nn as nn
+from typing import Optional, Callable
 
 """
  A standard MLP layer 
@@ -57,4 +57,41 @@ class MLP(nn.Module):
             return nn.LeakyReLU(inplace=True)
         else:
             raise NotImplementedError
+
+
+def get_activation(name) -> Callable:
+    if name is None:
+        return lambda x: x
+    name = name.lower()
+    if name == "none":
+        return lambda x: x
+    elif name == "lin2srgb":
+        return lambda x: torch.where(
+            x > 0.0031308,
+            torch.pow(torch.clamp(x, min=0.0031308), 1.0 / 2.4) * 1.055 - 0.055,
+            12.92 * x,
+        ).clamp(0.0, 1.0)
+    elif name == "exp":
+        return lambda x: torch.exp(x)
+    elif name == "shifted_exp":
+        return lambda x: torch.exp(x - 1.0)
+    elif name == "trunc_exp":
+        return trunc_exp
+    elif name == "shifted_trunc_exp":
+        return lambda x: trunc_exp(x - 1.0)
+    elif name == "sigmoid":
+        return lambda x: torch.sigmoid(x)
+    elif name == "tanh":
+        return lambda x: torch.tanh(x)
+    elif name == "shifted_softplus":
+        return lambda x: F.softplus(x - 1.0)
+    elif name == "scale_-11_01":
+        return lambda x: x * 0.5 + 0.5
+    elif name == "relu":
+        return lambda x: torch.relu(x)
+    else:
+        try:
+            return getattr(F, name)
+        except AttributeError:
+            raise ValueError(f"Unknown activation function: {name}")
         

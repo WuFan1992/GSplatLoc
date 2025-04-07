@@ -4,13 +4,13 @@ import torch.nn as nn
 from .attention import LinearAttention, FullAttention
 
 class Encoder_Config:
-    dim_model : int = 64
-    num_head: int = 2
+    dim_model : int = 256
+    num_head: int = 4
     attention: str = "linear"
 
 class Decoder_Config:
-    dim_model : int = 64
-    num_head: int = 2
+    dim_model : int = 256
+    num_head: int = 4
     attention: str = "linear"
 
 class LoFTRBlockLayer(nn.Module):
@@ -49,6 +49,7 @@ class LoFTRBlockLayer(nn.Module):
             x_mask (torch.Tensor): [N, L] (optional)
             source_mask (torch.Tensor): [N, S] (optional)
         """
+
         bs = x.size(0)
         query, key, value = x, source, source
 
@@ -94,7 +95,6 @@ class LOFTREncoder(nn.Module):
             feat0 (torch.Tensor): [N, L, C]
             mask0 (torch.Tensor): [N, L] (optional)
         """
-
         assert self.d_model == feat.size(2), "the feature number of src and transformer must be equal"
         for layer in self.layers:
             feat = layer(feat, feat, mask, mask)  

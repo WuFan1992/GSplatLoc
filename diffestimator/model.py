@@ -9,8 +9,9 @@ class Config:
     kp_dim: int = 64
     fusion_channles: int = 512
     embed_dim: int = 256
-    encode_layer : int = 12
+    encoder_layer : int = 12
     decoder_layer : int = 8
+    pose_dim : int = 12 # (3x4 = 3x3 (R) + 3x1 (t))
 
 
 class PosExtractNet(nn.Module):
@@ -30,80 +31,57 @@ class PosExtractNet(nn.Module):
         """
         Reference to "LOFTR"  and "Dustr3R"
         Using LOFTR implementation but the number of layer for encoder matching Dustr3D (encoder 12 layers)
+        Only self attention
         input : dim = 256
         output: dim = 256
-        header = 4
         """
 
-        self.kp_encoder = LOFTREncoder(config.encode_layer)
-        self.query_encoder = LOFTREncoder(config.encode_layer)
-        
-        #self.post_embed = MLP(embed_output_dim, config.post_embed_channels, config.post_embed_channels, 1, "silu")
+        self.kp_encoder = LOFTREncoder(config.encoder_layer)
+        self.query_encoder = LOFTREncoder(config.encoder_layer)
         
         """
-        xfeat dim = 64 ---> dim = 256
-        
+        Reference to "LOFTR"  and "Dustr3R"
+        Using LOFTR implementation but the number of layer for decoder matching Dustr3D (encoder 8 layers)
+        Only cross attention
+        input : dim = 256
+        output: dim = 256
         """
-        self.pre_kp_feature = nn.Linear(config.kp_in_channels, config.post_embed_channels)
-
+        self.decoder = LOFTRDecoder(config.decoder_layer)
+     
         """
-        Reference to "Triplane meets Gaussian Splatting " camera embedding module:
-        project camera extrinsic and intrinsic to higher dimension
-         1 x Linear, 1 x activation (silu), 1 x Linear
-          input : dim = 25
-          output : dim = 256 (The same as position embedding in NeRF and in LOFTR )
-        """
-        self.camera_embed = MLP(config.camera_embed_input_channel, config.post_embed_channels, config.post_embed_channels, 1, "silu")
-        
-      
-        self.self_atten = LoFTREncoderLayer(config.fusion_channles, config.post_embed_channels, config.transformer_header_num)
-        
-        """
-        Regress the final position
+        Regress the final pose 3x4
         1 x linear , 1 x activation (relu), 1x Linear 
         input : dim = 256
         hidden : dim = 1024  (projet to higher dimension)
         output : dim = 3
         """
-        self.estim_pos = MLP(config.post_embed_channels, 3,1024, 1, "relu")
-        
-        """
-        Regress the final descriptor
-        4 x mlp 
-        input : dim = 256
-        hidden : dim = 1024  (projet to higher dimension)
-        output : dim = 64
-        """
-        self.estim_feature = MLP(config.post_embed_channels, 64,1024, 4, "relu")
+        self.estim_pose = MLP(config.fusion_channles, 12,1024, 1, "relu")
         
     
     def forward(self, kp_feature: torch.Tensor, query_feature: torch.Tensor) ->float:
         
-        
-        # position embedding
-        pos_embed = self.embed(pos)
+        # project keypoint matched feature and query feature to higher dimension  
+        kp_feature = self.proj(kp_feature)
+        query_feature = self.proj(query_feature)
  
-        #post processing position embedding dim from 60 to 256
-        pos_embed = self.post_embed(pos_embed)
+        #Encode the feature
+        kp_encode = self.kp_encoder(kp_feature)
+        query_encode = self.query_encoder(query_feature)
 
-        #fusion the feature map
-        kp_feature = self.pre_kp_feature(kp_feature)
+        #Decode the feature
+        kp_decode, query_decode = self.decoder(kp_encode, query_encode)
         
         # catenate position encoding and xfeat feature
-        kp_pos_encod = torch.cat([pos_embed, kp_feature], dim=1)
+        kp_query_fea = torch.cat([query_decode, kp_decode], dim=2)
         
-        # prepare camera embedding input
-        cam_data = torch.cat([cam_intr, cam_extr], dim=1)
-        cam_data = self.camera_embed(cam_data)
-        
-        # self attention condition with 
-        token = self.self_atten(kp_pos_encod, kp_pos_encod, cam_data)
         
         #estimate shift
-        shift = self.estim_pos(token)
-        feature = self.estim_feature(token)
-
-        return shift, feature
+        predict_pose = self.estim_pose(kp_query_fea)
+        predict_pose = predict_pose.reshape((kp_query_fea.size(0), 3,4))
+        predict_R = predict_pose[:,:3,:3]
+        predict_t = predict_pose[:,:3,3]
+        
+        return predict_R, predict_t
 
 
 
