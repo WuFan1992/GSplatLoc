@@ -3,18 +3,11 @@ import torch
 
 import cv2
 import numpy as np
-import time
 import torch
-import torch.optim as optim
 
-########## Image #############
-from PIL import Image
-from torchvision.transforms import PILToTensor
-##############################
 
 # Regulation package
-from reguler.helper.utils import *
-from reguler.helper.transformer import *
+
 
 from scene import Scene
 from tqdm import tqdm
@@ -55,15 +48,10 @@ If we train with disk, we need to point out in the dataset_reader.py where to fi
 """
 
 
-import matplotlib.pyplot as plt
-from matplotlib import cm
-from matplotlib import collections as mplcollections
-from matplotlib import colors as mcolors
-
 import torch.nn as nn
 
 
-from reguler.network import *
+from diffestimator.model import PosExtractNet, Config
 
 
 
@@ -210,6 +198,59 @@ def diff_tensor(network_output, gt, device="cuda"):
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
 
+def mse_loss(network_output, gt):
+    return torch.mean((network_output-gt)**2)
+
+
+"""
+Use to get the gt 3d coord from query keypoint
+"""
+def new_calculate_ndc2camera(proj_matrix, xndc, yndc, depth):
+    a1 = proj_matrix[0,0]
+    a2 = proj_matrix[0,1]
+    a3 = proj_matrix[0,2]
+    a4 = proj_matrix[0,3]
+    
+    a5 = proj_matrix[1,0]
+    a6 = proj_matrix[1,1]
+    a7 = proj_matrix[1,2]
+    a8 = proj_matrix[1,3]
+    
+    
+    a13 = proj_matrix[3,0]
+    a14 = proj_matrix[3,1]
+    a15 = proj_matrix[3,2]
+    a16 = proj_matrix[3,3]
+    
+    A1 = a1-xndc*a13
+    B1 = a2-xndc*a14
+    C1 = (a3-xndc*a15)*depth+a4-xndc*a16
+    
+    A2 = a5-yndc*a13
+    B2 = a6-yndc*a14
+    C2 = (a7-yndc*a15)*depth+a8-yndc*a16
+    
+    X = (-C1*B2+C2*B1)/(A1*B2-A2*B1)
+    Y = (-A1*C2+A2*C1)/(A1*B2-A2*B1)
+    
+    return X, Y
+
+def pixel2ndc(pixel, S):
+    return (((pixel/0.5)+1.0)/S)-1.0
+
+
+def getGTXYZ(camera2ndc, view2camera, point_2d, depth_map):
+    
+    #Get the depth value
+    depth_map = depth_map.detach().squeeze(0)
+    depth = depth_map[point_2d[:,1].int().to("cpu"), point_2d[:,0].int().to("cpu")] 
+    X, Y = new_calculate_ndc2camera(camera2ndc.transpose(0,1), pixel2ndc(point_2d[:,0], 640), pixel2ndc(point_2d[:,1], 480), depth)
+    ones = torch.tensor([1.0]).repeat(point_2d.size(0)).to("cuda")
+        
+    cam_coord_inv = torch.stack([X, Y, depth, ones], dim=1)
+    output = torch.matmul(cam_coord_inv.double(), torch.inverse(view2camera).double())
+    return output[:, :3]
+
 
 
 
@@ -248,14 +289,14 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
    
     tb_writer = prepare_output_and_logger(args)
     # constant iteration 
-    total_iter = 900
+    total_iter = 5000
         
     gaussian_pcd = gaussians.get_xyz
     gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
     
     config = Config()
-    refiner = Refiner(config)
-    optimizer = torch.optim.SGD(refiner.parameters(), lr=1.e-6)
+    posenet = PosExtractNet(config)
+    optimizer = torch.optim.SGD(posenet.parameters(), lr=1.e-6)
 
         
     xfeat = XFeat(top_k=4096)
@@ -302,42 +343,28 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
             depth_map = render_pkg["depth"] 
         
             #For each keypoint detected in query image, find its coordinate in 3DGS
-            query_keypoints_3d = [calculate_3d_coordinates(torch.tensor(query_K).to("cuda"), viewpoint_cam.world_view_transform, depth_map.squeeze().detach(), kp) for kp in query_keypoints]
-            query_keypoints_3d = torch.stack(query_keypoints_3d, dim=0)
+            query_keypoints_3d = getGTXYZ(viewpoint_cam.projection_matrix, viewpoint_cam.world_view_transform, query_keypoints, depth_map)
+
+            
             with torch.no_grad():
-                matched_2d, matched_3d, match_3d_feature = find_2d3d_correspondences(
+                matched_2d, _, match_3d_feature = find_2d3d_correspondences(
                         query_keypoints,
                         query_feature,
                         gaussian_pcd,
                         gaussian_feat
                 )
-                _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
-                                                  query_K, 
-                                                  distCoeffs=None, 
-                                                  flags=cv2.SOLVEPNP_ITERATIVE, 
-                                                  iterationsCount=args.ransac_iters
-                                                  )
+              
+            _, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
+            match_3d_feature = torch.tensor(match_3d_feature).to("cuda")
+            pred_R, pred_t = posenet(match_3d_feature.to("cpu")[None], matched_gt_feature.to("cpu")[None])
+            gt_R = torch.tensor(viewpoint_cam.R)
+            gt_t = torch.tensor(viewpoint_cam.T)
+            loss += mse_loss(gt_R, pred_R) + mse_loss(gt_t, pred_t)
             
-                R, _ = cv2.Rodrigues(R)
-                
-
-
-            matched_gt_3d, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
-        
-        
-            cam_int = torch.Tensor(query_K).view(1,-1)
-            cam_ext_R = torch.reshape(torch.Tensor(R), (1,9))
-            cam_ext_T = torch.reshape(torch.Tensor(t), (1,3))
-            cam_ext = torch.cat([cam_ext_R, cam_ext_T], dim=1)  #1x12
-            cam_ext = torch.cat([cam_ext, torch.Tensor([[0,0,0,1]])], dim=1) #1x16
-
-        
-            pred_pos, gen_feature = refiner(torch.tensor(match_3d_feature), torch.tensor(matched_3d).to(torch.float32), cam_int, cam_ext)
-            loss += 0.6*l1_loss(pred_pos, matched_gt_3d.cpu()) + 0.4*l1_loss(gen_feature, matched_gt_feature.cpu())
         optimizer.zero_grad()
         loss = loss /(len(batch_viewpoint_cam))
         tb_writer.add_scalar("Loss/train_regulation", loss, iteration)
-        print("loss = ", loss)
+        print("batch loss = ", loss)
         loss.backward()
         optimizer.step()
         
@@ -353,7 +380,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
             # Log and save 
             if (iteration in saving_itr):
                 print("\n[ITER {}] Saving Regulation".format(iteration))
-                torch.save(refiner.state_dict(), scene.model_path + "/regulation_" + str(iteration) + ".pth")
+                torch.save(posenet.state_dict(), scene.model_path + "/regulation_" + str(iteration) + ".pth")
   
         
         tb_writer.flush()
