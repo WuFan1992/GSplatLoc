@@ -49,13 +49,13 @@ class PosExtractNet(nn.Module):
         self.decoder = LOFTRDecoder(config.decoder_layer)
      
         """
-        Regress the final pose 3x4
+        Regress the final delta position 
         1 x linear , 1 x activation (relu), 1x Linear 
         input : dim = 256
         hidden : dim = 1024  (projet to higher dimension)
         output : dim = 3
         """
-        self.estim_pose = MLP(config.fusion_channles, 12,1024, 1, "relu")
+        self.estim_delta_posi = MLP(config.fusion_channles, 3,1024, 1, "relu")
         
     
     def forward(self, kp_feature: torch.Tensor, query_feature: torch.Tensor) ->float:
@@ -76,12 +76,12 @@ class PosExtractNet(nn.Module):
         
         
         #estimate shift
-        predict_pose = self.estim_pose(kp_query_fea)
-        predict_pose = predict_pose.reshape((kp_query_fea.size(0), 3,4))
-        predict_R = predict_pose[:,:3,:3]
-        predict_t = predict_pose[:,:3,3]
+        delta_posi = self.estim_delta_posi(kp_query_fea)
+        #predict_pose = predict_pose.reshape((kp_query_fea.size(1), 3,4))
+        #predict_R = predict_pose[:,:3,:3]
+        #predict_t = predict_pose[:,:3,3]
         
-        return predict_R, predict_t
+        return delta_posi
 
 
 

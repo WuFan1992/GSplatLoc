@@ -314,7 +314,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
          # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-        #get batch viewpoint_cam batch size = 16:
+        #get batch viewpoint_cam batch size = 16: 
         batch_viewpoint_cam = []
         for _ in range(16):
             if len(viewpoint_stack) == 0:
@@ -347,23 +347,24 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
 
             
             with torch.no_grad():
-                matched_2d, _, match_3d_feature = find_2d3d_correspondences(
+                matched_2d, matched_3d, match_3d_feature = find_2d3d_correspondences(
                         query_keypoints,
                         query_feature,
                         gaussian_pcd,
                         gaussian_feat
                 )
               
-            _, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
+            query_keypoints_gt_3d, matched_gt_feature = get_match_gt(query_keypoints, torch.tensor(matched_2d), query_feature,  query_keypoints_3d)
             match_3d_feature = torch.tensor(match_3d_feature).to("cuda")
-            pred_R, pred_t = posenet(match_3d_feature.to("cpu")[None], matched_gt_feature.to("cpu")[None])
-            gt_R = torch.tensor(viewpoint_cam.R)
-            gt_t = torch.tensor(viewpoint_cam.T)
-            loss += mse_loss(gt_R, pred_R) + mse_loss(gt_t, pred_t)
+            delta_posi = posenet(match_3d_feature.to("cpu")[None], matched_gt_feature.to("cpu")[None])
+            
+            gt_delta_posi = (query_keypoints_gt_3d - torch.tensor(matched_3d).to("cuda")).to("cpu")
+            
+            loss += mse_loss(gt_delta_posi, delta_posi)
             
         optimizer.zero_grad()
         loss = loss /(len(batch_viewpoint_cam))
-        tb_writer.add_scalar("Loss/train_regulation", loss, iteration)
+        tb_writer.add_scalar("Loss/train_regulation_delta_position", loss, iteration)
         print("batch loss = ", loss)
         loss.backward()
         optimizer.step()
@@ -380,7 +381,7 @@ def localize_set(model_path, name, scene, gaussians, pipeline, background, args)
             # Log and save 
             if (iteration in saving_itr):
                 print("\n[ITER {}] Saving Regulation".format(iteration))
-                torch.save(posenet.state_dict(), scene.model_path + "/regulation_" + str(iteration) + ".pth")
+                torch.save(posenet.state_dict(), scene.model_path + "/regulation_estimate_position_" + str(iteration) + ".pth")
   
         
         tb_writer.flush()
