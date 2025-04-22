@@ -55,7 +55,7 @@ class PosExtractNet(nn.Module):
         hidden : dim = 1024  (projet to higher dimension)
         output : dim = 3
         """
-        self.estim_delta_posi = MLP(config.fusion_channles, 3,1024, 1, "relu")
+        self.estim_pose = MLP(config.fusion_channles, 12,1024, 1, "relu")
         
     
     def forward(self, kp_feature: torch.Tensor, query_feature: torch.Tensor) ->float:
@@ -76,12 +76,12 @@ class PosExtractNet(nn.Module):
         
         
         #estimate shift
-        delta_posi = self.estim_delta_posi(kp_query_fea)
-        #predict_pose = predict_pose.reshape((kp_query_fea.size(1), 3,4))
-        #predict_R = predict_pose[:,:3,:3]
-        #predict_t = predict_pose[:,:3,3]
+        predict_pose = self.estim_pose(kp_query_fea)
+        predict_pose = predict_pose.reshape((kp_query_fea.size(1), 3,4))
+        predict_R = predict_pose[:,:3,:3]
+        predict_t = predict_pose[:,:3,3]
         
-        return delta_posi
+        return predict_R, predict_t
 
 
 

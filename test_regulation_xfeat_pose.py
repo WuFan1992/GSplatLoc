@@ -173,7 +173,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
 
         xfeat = XFeat(top_k=4096)
         #Load model 
-        posenet_pth = model_path + "/regulation_estimate_position_5000.pth"
+        posenet_pth = model_path + "/regulation_4300.pth"
         config = Config()
         posenet = PosExtractNet(config)
         posenet.load_state_dict(torch.load(posenet_pth, weights_only=True))
@@ -204,24 +204,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
                     gaussian_feat
                 )
                 
-                # Get the predict delta position (x, y, z)
-                matched_gt_feature = get_match_gt(gt_keypoints, torch.tensor(matched_2d), gt_feature)
-
-                        
-                match_3d_feature, matched_3d = torch.tensor(matched_3d_feature).to("cuda"), torch.tensor(matched_3d)
-                delta_posi = posenet(match_3d_feature.to("cpu")[None], matched_gt_feature.to("cpu")[None])
-            
-                #Update the position
-                updated_3d = matched_3d + delta_posi
-                updated_3d = updated_3d.numpy()
-                
-                
-            gt_R = view.R
-            gt_t = view.T
-            
-            
-            # Calculate the new pose
-            _, R, t, inl = cv2.solvePnPRansac(updated_3d, matched_2d, 
+                # get the coarse pose 
+                _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
@@ -229,35 +213,36 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
                                                   )
             
             
-            R, _ = cv2.Rodrigues(R)    
-            
-            
-            #print(f"Match speed: {time.time() - start}")
-            #feature_matching_time.append(time.time()-start)
-            
-            
-             # Calculate the rotation and translation errors using existing function
-            rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
+                R, _ = cv2.Rodrigues(R) 
+                
+                gt_R = view.R
+                gt_t = view.T   
+                
+                 # Calculate the rotation and translation errors using existing function
+                rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
 
-            # Print the errors
-            print(f"Coarse Rotation Error: {rotError} deg")
-            print(f"Coarse Translation Error: {transError} cm")
+                # Print the errors
+                print(f"Coarse Rotation Error: {rotError} deg")
+                print(f"Coarse Translation Error: {transError} cm")
+                
+                
+                # Get the estimate R and T 
+                matched_gt_feature = get_match_gt(gt_keypoints, torch.tensor(matched_2d), gt_feature)
+                match_3d_feature, matched_3d = torch.tensor(matched_3d_feature).to("cuda"), torch.tensor(matched_3d)
+                pred_R, pred_T = posenet(match_3d_feature.to("cpu")[None], matched_gt_feature.to("cpu")[None])
             
-           
+                # Calculate the rotation and translation errors using existing function
+                
+                rotError, transError = calculate_fine_pose_errors(gt_R, gt_t, pred_R.numpy(), pred_T.numpy())
 
-           
-            # Calculate the rotation and translation errors using existing function
-            """
-            rotError, transError = calculate_fine_pose_errors(gt_R, gt_t, pred_R, pred_t)
-
-            # Print the errors
-            print(f"Fine Rotation Error: {rotError} deg")
-            print(f"Fine Translation Error: {transError} cm")
-            """
-            if inl is not None:
-                inliers.append(len(inl))
-                prior_rErr.append(rotError)
-                prior_tErr.append(transError)
+                # Print the errors
+                print(f"Fine Rotation Error: {rotError} deg")
+                print(f"Fine Translation Error: {transError} cm")
+                
+                if inl is not None:
+                    inliers.append(len(inl))
+                    prior_rErr.append(rotError)
+                    prior_tErr.append(transError)
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
