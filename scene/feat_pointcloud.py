@@ -24,7 +24,7 @@ class FeatPointCloud:
     
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
-        for i in range(self._semantic_feature.shape[1]*self._semantic_feature.shape[2]):  
+        for i in range(self._semantic_feature.shape[1]):  
             l.append('semantic_{}'.format(i))
         return l
     
@@ -42,8 +42,9 @@ class FeatPointCloud:
         xyz = self._xyz.detach().cpu().numpy()
         normals = np.zeros_like(xyz)
         semantic_feature = self._semantic_feature.detach().flatten(start_dim=1).contiguous().cpu().numpy() 
+        dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
-        elements = np.empty(xyz.shape[0], dtype=float)
+        elements = np.empty(xyz.shape[0], dtype=dtype_full)
         attributes = np.concatenate((xyz, normals, semantic_feature), axis=1) 
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
