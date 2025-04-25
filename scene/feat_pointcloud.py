@@ -7,6 +7,9 @@ from utils.system_utils import mkdir_p
 
 from plyfile import PlyData, PlyElement
 
+
+
+
 class FeatPointCloud:
     
     def __init__(self):
@@ -53,23 +56,42 @@ class FeatPointCloud:
     def load_ply(self, path):
         plydata = PlyData.read(path)
 
-        xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
+        self._xyz = np.stack((np.asarray(plydata.elements[0]["x"]),
                         np.asarray(plydata.elements[0]["y"]),
                         np.asarray(plydata.elements[0]["z"])),  axis=1)
         
+        
         count = sum(1 for name in plydata.elements[0].data.dtype.names if name.startswith("semantic_"))
         semantic_feature = np.stack([np.asarray(plydata.elements[0][f"semantic_{i}"]) for i in range(count)], axis=1) 
-        semantic_feature = np.expand_dims(semantic_feature, axis=-1) 
+        self._semantic_feature = np.expand_dims(semantic_feature, axis=-1) 
+
+                 
     
-    def update_ply(self, kp: torch.Tensor, kp_feat: torch.Tensor):
+    def update_ply(self, kps: torch.Tensor, kp_feat: torch.Tensor):
         """
             add the new 3D keypoint into the pointcloud with feature
             kp : 3D point associated with keypoint detected in query image [N, 3]
             kp_feat: 3D point feature [N, 64] 
         
         """
-        self._xyz = torch.cat([self._xyz, kp], dim=0)
-        self._semantic_feature = torch.cat([self._semantic_feature, kp_feat], dim=0)
+        # First iteration
+        if self._xyz.nelement() == 0:
+            self._xyz = kps
+            self._semantic_feature = kp_feat
+            return
+        
+        kp_idx = 0
+        for kp in kps:
+            matchs = torch.all(self._xyz == kp, dim=1)
+            if matchs.any():
+                xyz_idx = torch.nonzero(matchs)[0].item()
+                self._xyz[xyz_idx] = kp
+                self._semantic_feature[xyz_idx] = kp_feat[kp_idx]
+            else:
+                self._xyz = torch.cat([self._xyz, kp.unsqueeze(0)], dim=0)
+                self._semantic_feature = torch.cat([self._semantic_feature, kp_feat[kp_idx].unsqueeze(0)], dim=0)
+            kp_idx = kp_idx + 1
+        print("after update the point cloud, the numer of point is ", self._xyz.shape[0])
     
 
     
