@@ -6,7 +6,7 @@ from utils.graphics_utils import BasicPointCloud
 from utils.system_utils import mkdir_p
 
 from plyfile import PlyData, PlyElement
-
+from .dataset_readers import fetchPly
 
 
 
@@ -24,21 +24,26 @@ class FeatPointCloud:
     def get_semantic_feature(self):
         return self._semantic_feature 
     
+    def init_feat_pc(self, source_path, semantic_feature_size : int):
+        """
+        fetch the point cloud 
+        """
+        # Get the point cloud path
+        pc_path = os.path.join(source_path,"sparse/0/points3D.ply")
+        # Load the pcd
+        pcd = fetchPly(pc_path)
+        # set the initial xyz 
+        self._xyz = torch.tensor(np.asarray(pcd.points)).float().cuda()
+        # initialize the feature
+        self._semantic_feature = torch.zeros(self._xyz.shape[0], semantic_feature_size, 1).float().cuda()
+        
     
     def construct_list_of_attributes(self):
         l = ['x', 'y', 'z', 'nx', 'ny', 'nz']
         for i in range(self._semantic_feature.shape[1]):  
             l.append('semantic_{}'.format(i))
         return l
-    
-    
-    def create_from_pcd(self, pcd : BasicPointCloud , semantic_feature_size : int):
         
-        fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()        
-        self._semantic_feature = torch.zeros(fused_point_cloud.shape[0], semantic_feature_size, 1).float().cuda() 
-        print("Number of points at initialisation : ", fused_point_cloud.shape[0])
-    
-    
     def save_ply(self, path):
         mkdir_p(os.path.dirname(path))
 
@@ -65,33 +70,22 @@ class FeatPointCloud:
         semantic_feature = np.stack([np.asarray(plydata.elements[0][f"semantic_{i}"]) for i in range(count)], axis=1) 
         self._semantic_feature = np.expand_dims(semantic_feature, axis=-1) 
 
-                 
     
     def update_ply(self, kps: torch.Tensor, kp_feat: torch.Tensor):
         """
-            add the new 3D keypoint into the pointcloud with feature
+            For each matched 3D points, find its closest point in point cloud and update its feature 
             kp : 3D point associated with keypoint detected in query image [N, 3]
             kp_feat: 3D point feature [N, 64] 
         
         """
-        # First iteration
-        if self._xyz.nelement() == 0:
-            self._xyz = kps
-            self._semantic_feature = kp_feat
-            return
-        
-        kp_idx = 0
+        kp_idx = 0 
         for kp in kps:
-            matchs = torch.all(self._xyz == kp, dim=1)
-            if matchs.any():
-                xyz_idx = torch.nonzero(matchs)[0].item()
-                self._xyz[xyz_idx] = kp
-                self._semantic_feature[xyz_idx] = kp_feat[kp_idx]
-            else:
-                self._xyz = torch.cat([self._xyz, kp.unsqueeze(0)], dim=0)
-                self._semantic_feature = torch.cat([self._semantic_feature, kp_feat[kp_idx].unsqueeze(0)], dim=0)
+            distance = torch.norm(self._xyz - kp, dim=1)
+            closest_index = torch.argmin(distance).item()
+            self._semantic_feature[closest_index] = kp_feat[kp_idx].unsqueeze(-1)
             kp_idx = kp_idx + 1
-        print("after update the point cloud, the numer of point is ", self._xyz.shape[0])
+            
+            
     
 
     

@@ -87,6 +87,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     featpc = FeatPointCloud()
+    featpc.init_feat_pc(dataset.source_path, 64)
     xfeat = XFeat(top_k=4096)
     
     # 2D semantic feature map CNN decoder
@@ -118,6 +119,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    
+    saving_itr = np.arange(500,opt.iterations+100,500)
 
     for iteration in range(first_iter, opt.iterations + 1):
 
@@ -177,15 +180,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             
         with torch.no_grad():
-                _, matched_3d, match_3d_feature = find_2d3d_correspondences(
+                _, _, match_3d_feature = find_2d3d_correspondences(
                         query_keypoints,
                         query_feature,
                         gaussian_pcd,
                         gaussian_feat
                 )
-        matched_3d, match_3d_feature =  torch.tensor(matched_3d).to("cuda"), torch.tensor(match_3d_feature).to("cuda")
-        moved_kp_3d = matched_3d + 0.95*(query_keypoints_3d- matched_3d)
-        featpc.update_ply(moved_kp_3d, match_3d_feature)
+        match_3d_feature =  torch.tensor(match_3d_feature).to("cuda")
+        featpc.update_ply(query_keypoints_3d, match_3d_feature)
         
         with torch.no_grad():
             # Progress bar
@@ -198,7 +200,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Log and save
             training_report(tb_writer, iteration, Ll1, Ll1_feature, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background)) 
-            if (iteration in saving_iterations):
+            if (iteration in saving_itr):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
                 #save feature point cloud 
