@@ -187,7 +187,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                         gaussian_feat
                 )
         match_3d_feature =  torch.tensor(match_3d_feature).to("cuda")
-        featpc.update_ply(query_keypoints_3d, match_3d_feature)
+        featpc.update_ply(query_keypoints_3d, match_3d_feature, K_cloest=10)
         
         with torch.no_grad():
             # Progress bar
