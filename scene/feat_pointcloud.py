@@ -71,19 +71,27 @@ class FeatPointCloud:
         self._semantic_feature = np.expand_dims(semantic_feature, axis=-1) 
 
     
-    def update_ply(self, kps: torch.Tensor, kp_feat: torch.Tensor, K_cloest):
+    def update_ply(self, kps: torch.Tensor, kp_feat: torch.Tensor, neigbor_pts: list, neigbor_feats: list):
         """
             For each matched 3D points, find its closest point in point cloud and update its feature 
             kp : 3D point associated with keypoint detected in query image [N, 3]
             kp_feat: 3D point feature [N, 64] 
         
         """
-        kp_idx = 0 
+        kp_idx = 0
         for kp in kps:
+            # Set the keypoints feature
             distance = torch.norm(self._xyz - kp, dim=1)
-            _,k_closest_index = torch.topk(distance, K_cloest, largest=False)
-            for close_index in k_closest_index:
-                self._semantic_feature[close_index.item()] = kp_feat[kp_idx].unsqueeze(-1)
+            closest_index = torch.argmin(distance).item()
+            self._semantic_feature[closest_index] = kp_feat[kp_idx].unsqueeze(-1)
+            # Set the neigbor points
+            neigbor_idx = 0 
+            for neigbor_pt in neigbor_pts[kp_idx]:
+                distance = torch.norm(self._xyz - neigbor_pt, dim=1)
+                closest_index = torch.argmin(distance).item()
+                self._semantic_feature[closest_index] = neigbor_feats[kp_idx][neigbor_idx].unsqueeze(-1)
+                neigbor_idx = neigbor_idx + 1
+                
             kp_idx = kp_idx + 1
             
             

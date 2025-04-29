@@ -79,7 +79,28 @@ def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_
     
     return keypoints_matched, point_vis, point_vis_feature
 
+def find_k_closest(matched_3d, gaussian_pcd, gaussian_feat, delta_3d,  k_cloeset):
+    """
+    gaussian_pcd + delta keeps the relative distance between matched 3d points and neibbour point the same
+    """
+   
+    distance = torch.norm(gaussian_pcd-matched_3d, dim=1)
+    _, k_cloeset_index = torch.topk(distance, k_cloeset, largest=False)
+    k_cloeset_index = k_cloeset_index.cpu().numpy()
+    return gaussian_pcd[k_cloeset_index]+delta_3d, gaussian_feat[k_cloeset_index] 
 
+
+def find_k_closests(match_3ds, gaussian_pcd, gaussian_feat, delta_3ds, k_cloeset):
+    gaussian_pcds = []
+    gaussian_feats = []
+
+    for index in range(match_3ds.shape[0]):
+        close_pcd, close_feat = find_k_closest(match_3ds[index], gaussian_pcd, gaussian_feat, delta_3ds[index], k_cloeset)
+        gaussian_pcds.append(close_pcd)
+        gaussian_feats.append(close_feat)
+    return gaussian_pcds, gaussian_feats
+        
+        
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
@@ -120,8 +141,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     
-    saving_itr = np.arange(500,opt.iterations+100,500)
-
+    #saving_itr = np.arange(0,opt.iterations+100,500)
+    saving_itr = [opt.iterations]
     for iteration in range(first_iter, opt.iterations + 1):
 
         iter_start.record()
@@ -180,14 +201,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             
         with torch.no_grad():
-                _, _, match_3d_feature = find_2d3d_correspondences(
+                _, matched_3d, match_3d_feature = find_2d3d_correspondences(
                         query_keypoints,
                         query_feature,
                         gaussian_pcd,
                         gaussian_feat
                 )
         match_3d_feature =  torch.tensor(match_3d_feature).to("cuda")
-        featpc.update_ply(query_keypoints_3d, match_3d_feature, K_cloest=10)
+        matched_3d = torch.tensor(matched_3d).to("cuda")
+        delta_3d = query_keypoints_3d-matched_3d
+        neigbor_pts, neigbor_feats = find_k_closests(matched_3d, gaussian_pcd, gaussian_feat, delta_3d, 10)
+        featpc.update_ply(query_keypoints_3d, match_3d_feature, neigbor_pts, neigbor_feats)
+
         
         with torch.no_grad():
             # Progress bar
@@ -197,9 +222,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
-
+            
             # Log and save
             training_report(tb_writer, iteration, Ll1, Ll1_feature, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background)) 
+
             if (iteration in saving_itr):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -233,11 +259,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if dataset.speedup:
                     cnn_decoder_optimizer.step()
                     cnn_decoder_optimizer.zero_grad(set_to_none = True)
-
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
-
+                
         with torch.no_grad():        
             if network_gui.conn == None:
                 network_gui.try_connect(dataset.render_items)
