@@ -24,7 +24,16 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 from torchvision.transforms import PILToTensor
+"""
+### Import XFeat Feature Extractor ########
+"""
 from encoders.XFeat.modules.xfeat import XFeat
+
+"""
+#### Import Superpoint or R2D2 Feature Extractor #######
+"""
+from encoders.feature_extractor import FeatureExtractor
+
 
 import torch
 
@@ -122,13 +131,35 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
             continue
       
         tensor_image = PILToTensor()(image)[None].float()
-
+        
+        """
+        We must choose one of the following option and set the others as comments 
+        """
+        """
+        ## Option 1
+        ## Get the XFeat Feature from pretrained model 
+        """
         #semantic_feature = model.get_descriptors(tensor_image)[0]
+        
+        """
+        ## Option 2
+        ## Get the disk feature from files. 
+        ## These files are generated before running the training process 
+        """
         #feature_dir = images_folder + "/../../disk_feature/"+ seq_num
-        feature_dir = "C:\\Users\\fwu\\Documents\\PhD_FanWU\\PaperCode\\disk\\disk\\outputs\\"+ seq_num
-        semantic_feature_path = os.path.join(feature_dir, image_name) + '.color.pt'
-        semantic_feature = torch.load(semantic_feature_path)
-
+        #feature_dir = "C:\\Users\\fwu\\Documents\\PhD_FanWU\\PaperCode\\disk\\disk\\outputs\\"+ seq_num
+        #feature_dir = "J:\\PROJECTS\\ARCAD\\Data\\fwu\\disk\\disk\\outputs\\"+ seq_num
+        #semantic_feature_path = os.path.join(feature_dir, image_name) + '.color.pt'
+        #semantic_feature = torch.load(semantic_feature_path)
+        
+        """
+        ## Option 3
+        ## Get the SuperPoint feature from pretrained model.
+        ## Set "sp" for FeatureExtractor if we need superpoint
+        ## Set "r2d2" for FeatureExtractor if we need R2D2  
+        """
+        feature_extractor = FeatureExtractor("sp").cuda().eval()
+        semantic_feature = feature_extractor(tensor_image.cuda())["feature_map"][0]
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
                             semantic_feature=semantic_feature, seq_num=seq_num)
@@ -185,10 +216,10 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
 
     if eval:
         #################### Fan WU ############
-        #train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
-        #test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 2] 
-        train_cam_infos = [c for idx, c in enumerate(cam_infos) if c.seq_num == "seq-01"]
-        test_cam_infos = [c for idx,  c in enumerate(cam_infos) if idx % 8 == 2 and c.seq_num == "seq-02"]
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 2] 
+        #train_cam_infos = [c for idx, c in enumerate(cam_infos) if c.seq_num == "seq-01"]
+        #test_cam_infos = [c for idx,  c in enumerate(cam_infos) if idx % 8 == 2 and c.seq_num == "seq-02"]
         
     else:
         train_cam_infos = cam_infos
