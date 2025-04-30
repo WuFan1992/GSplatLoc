@@ -48,7 +48,7 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
-    semantic_feature: torch.tensor
+    #semantic_feature: torch.tensor
     ########### Fan WU ######### 
     seq_num: int
     ############################
@@ -59,7 +59,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
-    semantic_feature_dim: int 
+    #semantic_feature_dim: int 
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -156,13 +156,15 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         ## Option 3
         ## Get the SuperPoint feature from pretrained model.
         ## Set "sp" for FeatureExtractor if we need superpoint
-        ## Set "r2d2" for FeatureExtractor if we need R2D2  
+        ## Set "r2d2" for FeatureExtractor if we need R2D2
+           When use r2d2 feature, because the feature map is 640x480 which will run out of the memory when loading, so we delete
+           the   
         """
-        feature_extractor = FeatureExtractor("sp").cuda().eval()
-        semantic_feature = feature_extractor(tensor_image.cuda())["feature_map"][0]
+        #feature_extractor = FeatureExtractor("r2d2").cuda().eval()
+        #semantic_feature = feature_extractor(tensor_image.cuda())["feature_map"][0]
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
-                            semantic_feature=semantic_feature, seq_num=seq_num)
+                            seq_num=seq_num)
         
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
@@ -211,7 +213,7 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
                                            images_folder=os.path.join(path, reading_dir))
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
-    semantic_feature_dim = cam_infos[0].semantic_feature.shape[0]
+    #semantic_feature_dim = cam_infos[0].semantic_feature.shape[0]
 
 
     if eval:
@@ -246,8 +248,7 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
-                           ply_path=ply_path,
-                           semantic_feature_dim=semantic_feature_dim)
+                           ply_path=ply_path)
      
     return scene_info
 

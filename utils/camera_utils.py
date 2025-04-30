@@ -20,13 +20,9 @@ WARNED = False
 def loadCam(args, id, cam_info, resolution_scale):
     orig_w, orig_h = cam_info.image.size
     
-    gt_semantic_feature = cam_info.semantic_feature
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
     
-    # image size will the same as feature map size
-    elif args.resolution == 0:
-        resolution = gt_semantic_feature.shape[2], gt_semantic_feature.shape[1]    
     # customize resolution
     elif args.resolution == -2:
         resolution = 480, 320 #800, 450
@@ -61,7 +57,7 @@ def loadCam(args, id, cam_info, resolution_scale):
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 
                   image=gt_image, gt_alpha_mask=loaded_mask,
-                  image_name=cam_info.image_name, seq_num=seq_num,uid=id, semantic_feature = gt_semantic_feature,
+                  image_name=cam_info.image_name, seq_num=seq_num,uid=id,
                   data_device=args.data_device) 
 
 
