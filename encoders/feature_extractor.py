@@ -9,7 +9,7 @@ class FeatureExtractor(nn.Module):
         super(FeatureExtractor, self).__init__()
         self.feature_type = feature_type
         if feature_type == "sp":
-            print("Loading SuperPoint model...")
+            #print("Loading SuperPoint model...")
             self.model = SuperPoint().cuda().eval()
             self.feature_dim = 256
         elif feature_type == "r2d2":
@@ -26,10 +26,11 @@ class FeatureExtractor(nn.Module):
     @torch.no_grad()
     def forward(self, image):
         if self.feature_type == "sp":
-            features, scores = self.model(image)
+            features, scores, orig_feat = self.model(image)
             return {
                 "feature_map": features,
-                "scores": scores
+                "scores": scores, 
+                "original_feature_map": orig_feat 
             }
         elif self.feature_type == "r2d2":
             image = self.norm_image(image)

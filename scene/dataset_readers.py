@@ -35,6 +35,51 @@ from encoders.XFeat.modules.xfeat import XFeat
 from encoders.feature_extractor import FeatureExtractor
 
 
+from torch import Tensor
+def getTopKindices(score_map: Tensor, top_k=20):
+    """
+    Get the indice (x, y) of the top_k score in the score_map
+    score_map : [480,640]
+    """
+    # Flatten the score map
+    flatten_sm = score_map.view(-1)
+
+    _, topk_indices = torch.topk(flatten_sm, top_k)
+    
+    # Convert flat indices to 2D coordinates
+    coords = torch.stack((topk_indices // score_map.size(1), topk_indices % score_map.size(1)), dim=1)
+    
+    return coords
+
+def getTopKFeat(coords: list, feature_map:Tensor):
+    """
+    Get the feature value given the coords list 
+    """
+    Dim = feature_map.shape[0]
+    
+    # Convert coordinates to tensors
+    coords = torch.tensor(coords, dtype=torch.long) # (N,2)
+    x = coords[:,0]
+    y = coords[:,1]
+    
+    # Expand x and y for each channel
+    N = coords.shape[0]
+    x_expand = x.unsqueeze(0).expand(Dim, N)  # (D, N)
+    y_expand = y.unsqueeze(0).expand(Dim, N)  # (D, N)
+    
+    # Create a channel index
+    channel_indices = torch.arange(Dim).unsqueeze(1).expand(Dim, N)  # (D, N)
+
+    # Step 2: Use advanced indexing to get values at each (d, x, y)
+    # feature_map is (D, W, H), so access as: feature_map[d, x, y]
+    values = feature_map[channel_indices, x_expand, y_expand]  # shape: (D, N)
+
+    # Step 3: Transpose to (N, D)
+    values = values.permute(1, 0)  # shape: (N, D)
+    
+    return values
+
+
 import torch
 
 class CameraInfo(NamedTuple):
@@ -159,12 +204,18 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         ## Set "r2d2" for FeatureExtractor if we need R2D2  
         """
         feature_extractor = FeatureExtractor("sp").cuda().eval()
-        semantic_feature = feature_extractor(tensor_image.cuda())["feature_map"][0]
+        feat = feature_extractor(tensor_image.cuda())
+        semantic_feature = feat["feature_map"][0]
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
                             semantic_feature=semantic_feature, seq_num=seq_num)
         
-        cam_infos.append(cam_info)
+        scores = feat["scores"][0]
+        orig_feat_map = feat["original_feature_map"][0]
+        gt_keypoints = getTopKindices(scores.squeeze(0), 100)
+        gt_feature = getTopKFeat(gt_keypoints, orig_feat_map)
+        
+        cam_infos.append(cam_info) 
     sys.stdout.write('\n')
     return cam_infos
 

@@ -79,7 +79,7 @@ class Scene:
         if load_gaussian:
             if self.loaded_iter:
                 self.gaussians.load_ply(os.path.join(self.model_path,
-                                                           "point_cloud",
+                                                           "point_cloud_superpoint",
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
             else:

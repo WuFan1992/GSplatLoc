@@ -12,6 +12,7 @@ from torchvision import transforms
 import argparse
 import os
 
+        
 class SuperPoint(nn.Module):
     def __init__(self):
         super().__init__()
@@ -42,12 +43,10 @@ class SuperPoint(nn.Module):
         path = Path(__file__).parent / 'weights/superpoint_v1.pth'
         self.load_state_dict(torch.load(str(path)), strict=False)
 
-        print('Loaded SuperPoint model')
 
     def forward(self, x):
         """ Compute keypoints, scores, descriptors for image """
         # Shared Encoder
-        # print(x.shape)
         x = self.transform(x)
         x = self.relu(self.conv1a(x))
         x = self.relu(self.conv1b(x))
@@ -60,19 +59,24 @@ class SuperPoint(nn.Module):
         x = self.pool(x)
         x = self.relu(self.conv4a(x))
         x = self.relu(self.conv4b(x))
-
         # Compute the dense keypoint scores
         cPa = self.relu(self.convPa(x))
-        scores = self.convPb(cPa)
-        scores = torch.nn.functional.softmax(scores, 1)[:, :-1]
+        scores = self.convPb(cPa)                                   # [1,65,60,80]
+        scores = torch.nn.functional.softmax(scores, 1)[:, :-1]     # [1,64,60,80]
         b, _, h, w = scores.shape
         scores = scores.permute(0, 2, 3, 1).reshape(b, h, w, 8, 8)
-        scores = scores.permute(0, 1, 3, 2, 4).reshape(b, h*8, w*8)
+        scores = scores.permute(0, 1, 3, 2, 4).reshape(b, h*8, w*8) # [1,480,640]
+        
 
         cDa = self.relu(self.convDa(x))
         descriptors = self.convDb(cDa)
-        descriptors = torch.nn.functional.normalize(descriptors, p=2, dim=1)
-        return descriptors, scores
+        descriptors = torch.nn.functional.normalize(descriptors, p=2, dim=1) # [1,256,60,80]
+        
+        # rescale descriptor to its original size [1,256,480,640] where each 8x8 region 
+        # share the same dim value 
+        descriptors_ori = torch.nn.functional.interpolate(descriptors, scale_factor=8, mode='nearest')
+        
+        return descriptors, scores, descriptors_ori
     
 
 parser = argparse.ArgumentParser(
