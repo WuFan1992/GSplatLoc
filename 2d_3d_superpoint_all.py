@@ -116,12 +116,10 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
             
             gt_im = view.original_image[0:3, :, :]
             feat  = feature_extractor(gt_im[None].cuda())
-            orig_feat_map = feat["original_feature_map"][0]
-            scores = feat["scores"][0]
-            # Extract sparse features
-            gt_keypoints = getTopKindices(scores.squeeze(0), 4800)
-            gt_feature = getTopKFeat(gt_keypoints, orig_feat_map)
+            gt_keypoints = feat["keypoints"]
+            gt_feature = feat["descriptor"][0]
 
+            
             # Define intrinsic matrix
             K = np.eye(3)
             focal_length = fov2focal(view.FoVx, view.image_width)

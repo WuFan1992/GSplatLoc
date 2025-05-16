@@ -29,11 +29,14 @@ datasets/sparse/
 7scenes_sources/
 pgt_7scenes_chess/
 visloc_pseudo_gt_limitations/
+output_wholescene/
 
 #Build Files
 submodules/diff-gaussian-rasterization/build/
 submodules/simple-knn/build/
 
-logs/events.out.tfevents.1738074508.bprd-ithpc30.858353.0
+logs/events.*
+*.pt
+*.txt
 
 snapshot_fw.dump

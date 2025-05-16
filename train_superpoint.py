@@ -30,14 +30,16 @@ except ImportError:
 
 import torch.nn.functional as F
 from models.networks import CNN_decoder
-from models.semantic_dataloader import VariableSizeDataset
-from torch.utils.data import DataLoader
+
 
 #/////////////////////////
 import matplotlib.pyplot as plt
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 #////////////////////////
+
+
+from encoders.feature_extractor import FeatureExtractor
 
 """
 python train.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
@@ -55,6 +57,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
+    
+    feature_extractor = FeatureExtractor("sp").cuda().eval()
     
     # 2D semantic feature map CNN decoder
     viewpoint_stack = scene.getTrainCameras().copy()
@@ -111,9 +115,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
+        #gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
 
-        feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
+        #feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]),- mode='bilinear', align_corners=True).squeeze(0) #640x480
+        feat  = feature_extractor(gt_image[None].cuda())
+        gt_feature_map =  feat["feature_map"]
+          
         if dataset.speedup:
             feature_map = cnn_decoder(feature_map)
         Ll1_feature = l1_loss(feature_map, gt_feature_map) 

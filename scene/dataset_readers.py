@@ -203,17 +203,18 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         ## Set "sp" for FeatureExtractor if we need superpoint
         ## Set "r2d2" for FeatureExtractor if we need R2D2  
         """
-        feature_extractor = FeatureExtractor("sp").cuda().eval()
-        feat = feature_extractor(tensor_image.cuda())
-        semantic_feature = feat["feature_map"][0]
+        
+        #feature_extractor = FeatureExtractor("sp").cuda().eval()
+        #feat = feature_extractor(tensor_image.cuda())
+        #semantic_feature = feat["feature_map"][0]
+
+        semantic_feature = torch.rand(256,60,80)
+        
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
                             semantic_feature=semantic_feature, seq_num=seq_num)
         
-        scores = feat["scores"][0]
-        orig_feat_map = feat["original_feature_map"][0]
-        gt_keypoints = getTopKindices(scores.squeeze(0), 100)
-        gt_feature = getTopKFeat(gt_keypoints, orig_feat_map)
+
         
         cam_infos.append(cam_info) 
     sys.stdout.write('\n')
