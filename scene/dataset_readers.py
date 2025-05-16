@@ -123,11 +123,11 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
       
         tensor_image = PILToTensor()(image)[None].float()
 
-        #semantic_feature = model.get_descriptors(tensor_image)[0]
+        semantic_feature = model.get_descriptors(tensor_image)[0]
         #feature_dir = images_folder + "/../../disk_feature/"+ seq_num
-        feature_dir = "C:\\Users\\fwu\\Documents\\PhD_FanWU\\PaperCode\\disk\\disk\\outputs\\"+ seq_num
-        semantic_feature_path = os.path.join(feature_dir, image_name) + '.color.pt'
-        semantic_feature = torch.load(semantic_feature_path)
+        #feature_dir = "C:\\Users\\fwu\\Documents\\PhD_FanWU\\PaperCode\\disk\\disk\\outputs\\"+ seq_num
+        #semantic_feature_path = os.path.join(feature_dir, image_name) + '.color.pt'
+        #semantic_feature = torch.load(semantic_feature_path)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
@@ -185,10 +185,10 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
 
     if eval:
         #################### Fan WU ############
-        #train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
-        #test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 2] 
-        train_cam_infos = [c for idx, c in enumerate(cam_infos) if c.seq_num == "seq-01"]
-        test_cam_infos = [c for idx,  c in enumerate(cam_infos) if idx % 8 == 2 and c.seq_num == "seq-02"]
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 2] 
+        #train_cam_infos = [c for idx, c in enumerate(cam_infos) if c.seq_num == "seq-01"]
+        #test_cam_infos = [c for idx,  c in enumerate(cam_infos) if idx % 8 == 2 and c.seq_num == "seq-02"]
         
     else:
         train_cam_infos = cam_infos
