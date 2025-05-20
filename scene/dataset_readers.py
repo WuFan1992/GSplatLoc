@@ -39,7 +39,6 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
-    semantic_feature: torch.tensor
     ########### Fan WU ######### 
     seq_num: int
     ############################
@@ -50,7 +49,6 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
-    semantic_feature_dim: int 
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -78,7 +76,7 @@ def getNerfppNorm(cam_info):
 @torch.inference_mode()
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     cam_infos = []
-    model = XFeat().cuda()
+    #model = XFeat().cuda()
     
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -116,14 +114,15 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         image_name = os.path.basename(image_path).split(".")[0]
         
         try:
-            image = Image.open(image_path) 
-        except:
+            image = Image.open(image_path)                
+        except Exception as error:
+            print("An Exception occur :", error)
             print(f"Error opening image: {image_path}")
             continue
       
-        tensor_image = PILToTensor()(image)[None].float()
+        #tensor_image = PILToTensor()(image)[None].float()
 
-        semantic_feature = model.get_descriptors(tensor_image)[0]
+        #semantic_feature = model.get_descriptors(tensor_image)[0]
         #feature_dir = images_folder + "/../../disk_feature/"+ seq_num
         #feature_dir = "C:\\Users\\fwu\\Documents\\PhD_FanWU\\PaperCode\\disk\\disk\\outputs\\"+ seq_num
         #semantic_feature_path = os.path.join(feature_dir, image_name) + '.color.pt'
@@ -131,9 +130,10 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
-                            semantic_feature=semantic_feature, seq_num=seq_num)
+                            seq_num=seq_num)
         
         cam_infos.append(cam_info)
+        
     sys.stdout.write('\n')
     return cam_infos
 
@@ -180,7 +180,7 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
                                            images_folder=os.path.join(path, reading_dir))
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
-    semantic_feature_dim = cam_infos[0].semantic_feature.shape[0]
+    
 
 
     if eval:
@@ -215,8 +215,7 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
                            train_cameras=train_cam_infos,
                            test_cameras=test_cam_infos,
                            nerf_normalization=nerf_normalization,
-                           ply_path=ply_path,
-                           semantic_feature_dim=semantic_feature_dim)
+                           ply_path=ply_path)
      
     return scene_info
 

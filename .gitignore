@@ -34,6 +34,9 @@ visloc_pseudo_gt_limitations/
 submodules/diff-gaussian-rasterization/build/
 submodules/simple-knn/build/
 
-logs/events.out.tfevents.1738074508.bprd-ithpc30.858353.0
+output_wholescene/*
+*.pt
+*.txt
+logs/*
 
 snapshot_fw.dump

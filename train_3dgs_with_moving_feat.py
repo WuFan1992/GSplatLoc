@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, tv_loss 
+from utils.loss_utils import l1_loss, ssim 
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -32,7 +32,6 @@ import torch.nn.functional as F
 from models.networks import CNN_decoder
 
 #/////////////////////////
-import matplotlib.pyplot as plt
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 #////////////////////////
@@ -93,8 +92,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     # 2D semantic feature map CNN decoder
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-    gt_feature_map = viewpoint_cam.semantic_feature.cuda()
-    feature_out_dim = gt_feature_map.shape[0]
+    #gt_feature_map = viewpoint_cam.semantic_feature.cuda()
+    #feature_out_dim = gt_feature_map.shape[0]
+    feature_out_dim = 64
 
     
     # speed up
@@ -120,7 +120,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     
-    saving_itr = np.arange(500,opt.iterations+100,500)
+    saving_itr = np.arange(500,opt.iterations+100,5000)
 
     for iteration in range(first_iter, opt.iterations + 1):
 
@@ -147,7 +147,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
+        #gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
+        gt_feature_map = xfeat.get_descriptors(gt_image[None])[0]
 
         feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
         if dataset.speedup:
@@ -204,7 +205,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
                 #save feature point cloud 
-                point_cloud_path = os.path.join(scene.model_path, "feature_point_cloud/iteration_{}".format(iteration))
+                point_cloud_path = os.path.join(scene.model_path, "feature_point_cloud_chess/iteration_{}".format(iteration))
                 featpc.save_ply(os.path.join(point_cloud_path, "feature_point_cloud.ply"))
 
                 print("\n[ITER {}] Saving feature decoder ckpt".format(iteration))
