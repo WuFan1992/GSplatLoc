@@ -50,6 +50,20 @@ If we train with disk, we need to point out in the dataset_reader.py where to fi
 
 """
 
+
+def get_render_kp_desc(keypoints, render_feat_map):
+    x = keypoints[:, 0].to(torch.int)  # 列坐标
+    y = keypoints[:, 1].to(torch.int)  # 行坐标
+    
+   
+
+    # 从 [C, H, W] -> [H, W, C]
+    feature_map = render_feat_map.permute(1, 2, 0)
+
+    # 使用索引提取: [N, 64]
+    features = feature_map[y, x]  
+    return features
+
 def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_feat, chunk_size=10000):
     device = image_features.device
     f_N, feat_dim = image_features.shape
@@ -120,7 +134,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     
-    saving_itr = np.arange(500,opt.iterations+100,5000)
+    saving_itr = [5000,10000, 15000]
 
     for iteration in range(first_iter, opt.iterations + 1):
 
@@ -149,7 +163,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         Ll1 = l1_loss(image, gt_image)
         #gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
         gt_feature_map = xfeat.get_descriptors(gt_image[None])[0]
-
+        orig_feat_map = feature_map.clone().detach()
         feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
         if dataset.speedup:
             feature_map = cnn_decoder(feature_map)
@@ -173,6 +187,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # # [1,C,H,W] = [1,3,480,640]
         query_keypoints, _, query_feature = xfeat.detectAndCompute(query_img[None], 
                                                                  top_k=4096)[0].values()
+        
+        query_feature = get_render_kp_desc(query_keypoints, orig_feat_map)
         
         depth_map = render_pkg["depth"] 
         
