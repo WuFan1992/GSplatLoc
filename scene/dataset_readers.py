@@ -24,7 +24,16 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 from torchvision.transforms import PILToTensor
+"""
+### Import XFeat Feature Extractor ########
+"""
 from encoders.XFeat.modules.xfeat import XFeat
+
+"""
+#### Import Superpoint or R2D2 Feature Extractor #######
+"""
+from encoders.feature_extractor import FeatureExtractor
+
 
 import torch
 
@@ -39,6 +48,7 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
+    #semantic_feature: torch.tensor
     ########### Fan WU ######### 
     seq_num: int
     ############################
@@ -49,6 +59,7 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
+    #semantic_feature_dim: int 
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -76,7 +87,7 @@ def getNerfppNorm(cam_info):
 @torch.inference_mode()
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     cam_infos = []
-    #model = XFeat().cuda()
+    model = XFeat().cuda()
     
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -88,6 +99,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         intr = cam_intrinsics[extr.camera_id]
         height = intr.height
         width = intr.width
+        image_name = extr.name
 
         uid = intr.id
         R = np.transpose(qvec2rotmat(extr.qvec))
@@ -111,29 +123,51 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         image_path = os.path.join(images_folder, extr.name)
         ##########################################
         seq_num = extr.name.split("/")[0]
-        image_name = os.path.basename(image_path).split(".")[0]
+        #image_name = os.path.basename(image_path).split(".")[0]
         
         try:
-            image = Image.open(image_path)                
-        except Exception as error:
-            print("An Exception occur :", error)
+            image = Image.open(image_path) 
+        except:
             print(f"Error opening image: {image_path}")
             continue
       
-        #tensor_image = PILToTensor()(image)[None].float()
-
+        tensor_image = PILToTensor()(image)[None].float()
+        
+        """
+        We must choose one of the following option and set the others as comments 
+        """
+        """
+        ## Option 1
+        ## Get the XFeat Feature from pretrained model 
+        """
         #semantic_feature = model.get_descriptors(tensor_image)[0]
+        
+        """
+        ## Option 2
+        ## Get the disk feature from files. 
+        ## These files are generated before running the training process 
+        """
         #feature_dir = images_folder + "/../../disk_feature/"+ seq_num
         #feature_dir = "C:\\Users\\fwu\\Documents\\PhD_FanWU\\PaperCode\\disk\\disk\\outputs\\"+ seq_num
+        #feature_dir = "J:\\PROJECTS\\ARCAD\\Data\\fwu\\disk\\disk\\outputs\\"+ seq_num
         #semantic_feature_path = os.path.join(feature_dir, image_name) + '.color.pt'
         #semantic_feature = torch.load(semantic_feature_path)
-
+        
+        """
+        ## Option 3
+        ## Get the SuperPoint feature from pretrained model.
+        ## Set "sp" for FeatureExtractor if we need superpoint
+        ## Set "r2d2" for FeatureExtractor if we need R2D2
+           When use r2d2 feature, because the feature map is 640x480 which will run out of the memory when loading, so we delete
+           the   
+        """
+        #feature_extractor = FeatureExtractor("r2d2").cuda().eval()
+        #semantic_feature = feature_extractor(tensor_image.cuda())["feature_map"][0]
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
                             seq_num=seq_num)
         
         cam_infos.append(cam_info)
-        
     sys.stdout.write('\n')
     return cam_infos
 
@@ -175,24 +209,41 @@ def readColmapSceneInfo(path, foundation_model, images, eval, llffhold=8):
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
     
     reading_dir = "images" if images == None else images
-
     
+    if os.path.exists(os.path.join(path, "sparse/0", "list_test.txt")):
+        # 7scenes
+        with open(os.path.join(path, "sparse/0", "list_test.txt")) as f:
+            test_images = f.readlines()
+            test_images = [x.strip() for x in test_images]
+    elif os.path.exists(os.path.join(path, "dataset_test.txt")):
+        # cambridge
+        with open(os.path.join(path, "dataset_test.txt")) as f:
+            test_images = f.readlines()
+            test_images = [x.split(" ")[0] for x in test_images if x[0] != '#']
+    else:
+        test_images = []
+
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, 
                                            images_folder=os.path.join(path, reading_dir))
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
-    
+
 
 
     if eval:
-        #################### Fan WU ############
-        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 2] # avoid 1st to be test view
-        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 2] 
-        #train_cam_infos = [c for idx, c in enumerate(cam_infos) if c.seq_num == "seq-01"]
-        #test_cam_infos = [c for idx,  c in enumerate(cam_infos) if idx % 8 == 2 and c.seq_num == "seq-02"]
+        train_cam_infos = []
+        test_cam_infos = []
+        for cam_info in cam_infos:
+            if cam_info.image_name in test_images:
+                test_cam_infos.append(cam_info)
+            else:
+                train_cam_infos.append(cam_info)
         
     else:
-        train_cam_infos = cam_infos
-        test_cam_infos = []
+        train_cam_infos = []
+        test_cam_infos = cam_infos
+    
+    print(f'test cameras: {len(test_cam_infos)}')
+    print(f'train cameras: {len(train_cam_infos)}')
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
