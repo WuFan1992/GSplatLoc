@@ -36,6 +36,8 @@ class FeatPointCloud:
         self._xyz = torch.tensor(np.asarray(pcd.points)).float().cuda()
         # initialize the feature
         self._semantic_feature = torch.zeros(self._xyz.shape[0], semantic_feature_size, 1).float().cuda()
+        # Initialize the label to indicate if this keypoint has already been updated 
+        self._updated = torch.zeros(self._xyz.shape[0], dtype=torch.bool)
         
     
     def construct_list_of_attributes(self):
@@ -82,7 +84,9 @@ class FeatPointCloud:
         for kp in kps:
             distance = torch.norm(self._xyz - kp, dim=1)
             closest_index = torch.argmin(distance).item()
-            self._semantic_feature[closest_index] = kp_feat[kp_idx].unsqueeze(-1)
+            if not self._updated[closest_index]:
+                self._semantic_feature[closest_index] = kp_feat[kp_idx].unsqueeze(-1)
+                self._updated[closest_index] = True
             kp_idx = kp_idx + 1
             
             
