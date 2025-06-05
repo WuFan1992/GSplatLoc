@@ -37,6 +37,8 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 from diffestimator.model import *
 from scene.feat_pointcloud import *
 
+from utils.refiner import refiner
+
 """
 This file is the complet version of 2d_3d_xfeat.py that launch direct 2D 3D macthing within all the test image 
  command: 
@@ -174,8 +176,6 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
 
         xfeat = XFeat(top_k=4096)
         
-        #gaussian_pcd = gaussians.get_xyz
-        #gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
         feat_pcd = torch.tensor(feat_pc.get_xyz).to("cuda")
         feat_feat = torch.tensor(feat_pc.get_semantic_feature.squeeze(-1)).to("cuda")
     
@@ -221,6 +221,22 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 print(f"Coarse Rotation Error: {rotError} deg")
                 print(f"Coarse Translation Error: {transError} cm")
                 
+                # Fine Pose
+                view.update_RT(R.T, t[:,0])
+                updated_matched_2d, updated_matched_3d = refiner(matched_2d, view.full_proj_transform, feat_pcd)
+
+                _, fine_R, fine_t, inl = cv2.solvePnPRansac(updated_matched_3d, updated_matched_2d, 
+                                                  K, 
+                                                  distCoeffs=None, 
+                                                  flags=cv2.SOLVEPNP_ITERATIVE, 
+                                                  iterationsCount=args.ransac_iters
+                                                  )
+                
+                fine_R, _ = cv2.Rodrigues(fine_R) 
+                rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
+                
+                print(f"Fine Rotation Error: {rotError_fine} deg")
+                print(f"Fine Translation Error: {transError_fine} cm")
                 
                 
                 if inl is not None:
@@ -243,7 +259,7 @@ def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args):
      #Load the feature point cloud
     feat_pc = FeatPointCloud()
     feat_pc.load_ply(os.path.join(dataset.model_path,"feature_point_cloud",
-                                                      "iteration_1000" ,
+                                                      "iteration_15000" ,
                                                       "feature_point_cloud.ply"))  
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False, load_gaussian=False)
