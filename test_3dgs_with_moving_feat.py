@@ -173,13 +173,22 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
         prior_rErr = []
         prior_tErr = []
         inliers = []
+        
+        refine_rErr = []
+        refine_tErr = []
+        
+        time_coarse = []
+        time_fine = []
 
         xfeat = XFeat(top_k=4096)
         
         feat_pcd = torch.tensor(feat_pc.get_xyz).to("cuda")
         feat_feat = torch.tensor(feat_pc.get_semantic_feature.squeeze(-1)).to("cuda")
+        
+
     
         for _, view in enumerate(tqdm(views, desc="Rendering progress")):
+
             
             gt_im = view.original_image[0:3, :, :]
             # Extract sparse features
@@ -200,6 +209,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                     feat_feat
                 )
                 
+            
                 # get the coarse pose 
                 _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K, 
@@ -207,8 +217,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
                                                   iterationsCount=args.ransac_iters
                                                   )
-            
-            
+
+                time_coarse.append(time.time() - start)
                 R, _ = cv2.Rodrigues(R) 
                 
                 gt_R = view.R
@@ -222,34 +232,54 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 print(f"Coarse Translation Error: {transError} cm")
                 
                 # Fine Pose
-                view.update_RT(R.T, t[:,0])
-                updated_matched_2d, updated_matched_3d = refiner(matched_2d, view.full_proj_transform, feat_pcd)
+                rotError_fine =0
+                transError_fine = 0
+                start_refine = time.time()
+                for i in range(20):
+                    view.update_RT(R.T, t[:,0])
+                    updated_matched_2d, updated_matched_3d = refiner(matched_2d, matched_3d,  view.full_proj_transform, feat_pcd)
 
-                _, fine_R, fine_t, inl = cv2.solvePnPRansac(updated_matched_3d, updated_matched_2d, 
+                    _, fine_R, fine_t, inl = cv2.solvePnPRansac(updated_matched_3d.cpu().numpy(), updated_matched_2d, 
                                                   K, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
                                                   iterationsCount=args.ransac_iters
                                                   )
                 
-                fine_R, _ = cv2.Rodrigues(fine_R) 
-                rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
+                    fine_R, _ = cv2.Rodrigues(fine_R) 
+                    rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
+                
+                    
+                    matched_2d = updated_matched_2d
+                    matched_3d = updated_matched_3d
+                    R, t = fine_R, fine_t
+                time_fine.append(time.time()-start_refine)
                 
                 print(f"Fine Rotation Error: {rotError_fine} deg")
                 print(f"Fine Translation Error: {transError_fine} cm")
-                
-                
                 if inl is not None:
                     inliers.append(len(inl))
                     prior_rErr.append(rotError)
                     prior_tErr.append(transError)
+                    refine_rErr.append(rotError_fine)
+                    refine_tErr.append(transError_fine)
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
-        mean_inliers = np.mean(inliers) 
+        mean_inliers = np.mean(inliers)
+        
+        err_mean_refine_rot = np.mean(refine_rErr)
+        err_mean_refine_trans = np.mean(refine_tErr) 
+        
+        mean_coarse_time = np.mean(time_coarse)
+        mean_fine_time = np.mean(time_fine)
 
-        print(f"Rotation Average Error: {err_mean_rot} deg ")
-        print(f"Translation Average Error: {err_mean_trans} cm ") 
+        print(f"Rotation Coarse Average Error: {err_mean_rot} deg ")
+        print(f"Translation CoarseAverage Error: {err_mean_trans} cm ") 
+        print(f"Rotation Fine Average Error: {err_mean_refine_rot} deg ")
+        print(f"Translation Fine Average Error: {err_mean_refine_trans} cm ") 
+        print(f"Time Coarse : {mean_coarse_time} s ")
+        print(f"Time Fine : {mean_fine_time} s ")
         print(f"Mean inliers : {mean_inliers}  ")
 
        
