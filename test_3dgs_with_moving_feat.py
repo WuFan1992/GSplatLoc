@@ -37,7 +37,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 from diffestimator.model import *
 from scene.feat_pointcloud import *
 
-from utils.refiner import refiner
+from utils.refiner import refiner, find_nearest
 
 """
 This file is the complet version of 2d_3d_xfeat.py that launch direct 2D 3D macthing within all the test image 
@@ -235,11 +235,24 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 rotError_fine =0
                 transError_fine = 0
                 start_refine = time.time()
+                
+                matched_3d = torch.tensor(matched_3d, dtype=torch.float32, device="cuda",  requires_grad=True)
+                optimizer = torch.optim.Adam([matched_3d], lr=1e-2)
+                
                 for i in range(20):
                     view.update_RT(R.T, t[:,0])
-                    updated_matched_2d, updated_matched_3d = refiner(matched_2d, matched_3d,  view.full_proj_transform, feat_pcd)
+                    updated_matched_2d, matched_3d_proj,updated_matched_3d = refiner(matched_2d, matched_3d, view.full_proj_transform)
+                    
+                    
+                    loss = F.mse_loss(matched_3d_proj, torch.tensor(updated_matched_2d).cuda())
+                    loss = torch.tensor(loss, requires_grad=True)
+                    loss.backward()
+                    optimizer.step()
+                    
+                    cloest_3d = find_nearest(updated_matched_3d, feat_pcd)
 
-                    _, fine_R, fine_t, inl = cv2.solvePnPRansac(updated_matched_3d.cpu().numpy(), updated_matched_2d, 
+
+                    _, fine_R, fine_t, inl = cv2.solvePnPRansac(cloest_3d.cpu().numpy(), updated_matched_2d, 
                                                   K, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
@@ -249,9 +262,9 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                     fine_R, _ = cv2.Rodrigues(fine_R) 
                     rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
                 
-                    
+                    matched_3d = cloest_3d
                     matched_2d = updated_matched_2d
-                    matched_3d = updated_matched_3d
+
                     R, t = fine_R, fine_t
                 time_fine.append(time.time()-start_refine)
                 
