@@ -171,7 +171,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
         prior_rErr = []
         prior_tErr = []
         inliers = []
-
+        ratio_list = []
         xfeat = XFeat(top_k=4096)
         
         gaussian_pcd = gaussians.get_xyz
@@ -215,26 +215,29 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args)
                 
                  # Calculate the rotation and translation errors using existing function
                 rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
+                ratio = len(inl)/len(matched_3d)
 
                 # Print the errors
                 print(f"Coarse Rotation Error: {rotError} deg")
                 print(f"Coarse Translation Error: {transError} cm")
-                
+                print(f"Inlier ratios : {ratio} cm")
                 
                 
                 if inl is not None:
                     inliers.append(len(inl))
                     prior_rErr.append(rotError)
                     prior_tErr.append(transError)
+                    ratio_list.append(ratio)
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
         mean_inliers = np.mean(inliers) 
+        mean_ratios = np.mean(ratio_list)
 
         print(f"Rotation Average Error: {err_mean_rot} deg ")
         print(f"Translation Average Error: {err_mean_trans} cm ") 
         print(f"Mean inliers : {mean_inliers}  ")
-
+        print(f"Mean ratio : {mean_ratios}  ")
        
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 

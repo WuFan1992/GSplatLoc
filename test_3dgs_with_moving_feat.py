@@ -173,9 +173,11 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
         prior_rErr = []
         prior_tErr = []
         inliers = []
+        list_ratio = []
+
         
-        refine_rErr = []
-        refine_tErr = []
+        #refine_rErr = []
+        #refine_tErr = []
         
         time_coarse = []
         time_fine = []
@@ -231,6 +233,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 print(f"Coarse Rotation Error: {rotError} deg")
                 print(f"Coarse Translation Error: {transError} cm")
                 
+                """
                 # Fine Pose
                 rotError_fine =0
                 transError_fine = 0
@@ -267,34 +270,37 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
 
                     R, t = fine_R, fine_t
                 time_fine.append(time.time()-start_refine)
-                
-                print(f"Fine Rotation Error: {rotError_fine} deg")
-                print(f"Fine Translation Error: {transError_fine} cm")
+                """
+                #print(f"Fine Rotation Error: {rotError_fine} deg")
+                #print(f"Fine Translation Error: {transError_fine} cm")
+                ratio  = len(inl) / len(matched_3d)
                 if inl is not None:
                     inliers.append(len(inl))
                     prior_rErr.append(rotError)
                     prior_tErr.append(transError)
-                    refine_rErr.append(rotError_fine)
-                    refine_tErr.append(transError_fine)
+                    #refine_rErr.append(rotError_fine)
+                    #refine_tErr.append(transError_fine)
+                    list_ratio.append(ratio)
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
         mean_inliers = np.mean(inliers)
+        mean_ratio = np.mean(list_ratio)
         
-        err_mean_refine_rot = np.mean(refine_rErr)
-        err_mean_refine_trans = np.mean(refine_tErr) 
+        #err_mean_refine_rot = np.mean(refine_rErr)
+        #err_mean_refine_trans = np.mean(refine_tErr) 
         
-        mean_coarse_time = np.mean(time_coarse)
-        mean_fine_time = np.mean(time_fine)
+        #mean_coarse_time = np.mean(time_coarse)
+        #mean_fine_time = np.mean(time_fine)
 
         print(f"Rotation Coarse Average Error: {err_mean_rot} deg ")
         print(f"Translation CoarseAverage Error: {err_mean_trans} cm ") 
-        print(f"Rotation Fine Average Error: {err_mean_refine_rot} deg ")
-        print(f"Translation Fine Average Error: {err_mean_refine_trans} cm ") 
-        print(f"Time Coarse : {mean_coarse_time} s ")
-        print(f"Time Fine : {mean_fine_time} s ")
+        #print(f"Rotation Fine Average Error: {err_mean_refine_rot} deg ")
+        #print(f"Translation Fine Average Error: {err_mean_refine_trans} cm ") 
+        #print(f"Time Coarse : {mean_coarse_time} s ")
+        #print(f"Time Fine : {mean_fine_time} s ")
         print(f"Mean inliers : {mean_inliers}  ")
-
+        print(f"Mean ratios : {mean_ratio}  ")
        
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 

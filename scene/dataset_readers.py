@@ -32,7 +32,7 @@ from encoders.XFeat.modules.xfeat import XFeat
 """
 #### Import Superpoint or R2D2 Feature Extractor #######
 """
-from encoders.feature_extractor import FeatureExtractor
+
 
 
 import torch
@@ -124,6 +124,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         ##########################################
         seq_num = extr.name.split("/")[0]
         #image_name = os.path.basename(image_path).split(".")[0]
+
         
         try:
             image = Image.open(image_path) 
