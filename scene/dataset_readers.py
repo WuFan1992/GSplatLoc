@@ -12,7 +12,6 @@
 
 import os
 import sys
-from PIL import Image
 from typing import NamedTuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text, read_points3D_nvm
@@ -24,15 +23,7 @@ from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 from torchvision.transforms import PILToTensor
-"""
-### Import XFeat Feature Extractor ########
-"""
-from encoders.XFeat.modules.xfeat import XFeat
 
-"""
-#### Import Superpoint or R2D2 Feature Extractor #######
-"""
-from encoders.feature_extractor import FeatureExtractor
 
 
 import torch
@@ -43,15 +34,10 @@ class CameraInfo(NamedTuple):
     T: np.array
     FovY: np.array
     FovX: np.array
-    image: np.array
     image_path: str
     image_name: str
-    width: int
-    height: int
-    #semantic_feature: torch.tensor
-    ########### Fan WU ######### 
     seq_num: int
-    ############################
+
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -87,7 +73,6 @@ def getNerfppNorm(cam_info):
 @torch.inference_mode()
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     cam_infos = []
-    model = XFeat().cuda()
     
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
@@ -118,53 +103,12 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
-        ############ Fan WU #####################
-        #image_path = os.path.join(images_folder, os.path.basename(extr.name))
-        image_path = os.path.join(images_folder, extr.name)
-        ##########################################
-        seq_num = extr.name.split("/")[0]
-        #image_name = os.path.basename(image_path).split(".")[0]
-        
-        try:
-            image = Image.open(image_path) 
-        except:
-            print(f"Error opening image: {image_path}")
-            continue
       
-        tensor_image = PILToTensor()(image)[None].float()
+        image_path = os.path.join(images_folder, extr.name)
+        seq_num = extr.name.split("/")[0]
         
-        """
-        We must choose one of the following option and set the others as comments 
-        """
-        """
-        ## Option 1
-        ## Get the XFeat Feature from pretrained model 
-        """
-        #semantic_feature = model.get_descriptors(tensor_image)[0]
-        
-        """
-        ## Option 2
-        ## Get the disk feature from files. 
-        ## These files are generated before running the training process 
-        """
-        #feature_dir = images_folder + "/../../disk_feature/"+ seq_num
-        #feature_dir = "C:\\Users\\fwu\\Documents\\PhD_FanWU\\PaperCode\\disk\\disk\\outputs\\"+ seq_num
-        #feature_dir = "J:\\PROJECTS\\ARCAD\\Data\\fwu\\disk\\disk\\outputs\\"+ seq_num
-        #semantic_feature_path = os.path.join(feature_dir, image_name) + '.color.pt'
-        #semantic_feature = torch.load(semantic_feature_path)
-        
-        """
-        ## Option 3
-        ## Get the SuperPoint feature from pretrained model.
-        ## Set "sp" for FeatureExtractor if we need superpoint
-        ## Set "r2d2" for FeatureExtractor if we need R2D2
-           When use r2d2 feature, because the feature map is 640x480 which will run out of the memory when loading, so we delete
-           the   
-        """
-        #feature_extractor = FeatureExtractor("r2d2").cuda().eval()
-        #semantic_feature = feature_extractor(tensor_image.cuda())["feature_map"][0]
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1],
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX,
+                            image_path=image_path, image_name=image_name,
                             seq_num=seq_num)
         
         cam_infos.append(cam_info)

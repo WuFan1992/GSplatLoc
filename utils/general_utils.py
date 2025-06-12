@@ -18,8 +18,8 @@ import random
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
 
-def PILtoTorch(pil_image, resolution):
-    resized_image_PIL = pil_image.resize(resolution)
+def PILtoTorch(pil_image):
+    resized_image_PIL = pil_image
     resized_image = torch.from_numpy(np.array(resized_image_PIL)) / 255.0
     if len(resized_image.shape) == 3:
         return resized_image.permute(2, 0, 1)
@@ -131,3 +131,9 @@ def safe_state(silent):
     np.random.seed(0)
     torch.manual_seed(0)
     torch.cuda.set_device(torch.device("cuda:0"))
+
+def image_process(image):
+    resized_image_rgb = PILtoTorch(image)
+    gt_image = resized_image_rgb[:3, ...]
+    original_image = gt_image.clamp(0.0, 1.0)
+    return original_image  

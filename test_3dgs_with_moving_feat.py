@@ -14,12 +14,12 @@ import cv2
 import numpy as np
 import time
 import torch
-import torch.optim as optim
+from PIL import Image
 
 from scene import Scene
 from tqdm import tqdm
 from gaussian_renderer import render
-from utils.general_utils import safe_state
+from utils.general_utils import safe_state, image_process
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
@@ -38,21 +38,25 @@ from diffestimator.model import *
 from scene.feat_pointcloud import *
 
 """
-This file is the complet version of 2d_3d_xfeat.py that launch direct 2D 3D macthing within all the test image 
- command: 
-python test_3dgs_with_moving_feat.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+usage:
+     We have already construct a sfm with xfeat feature. This file is to test the 2D 3D matching with sfm.
+     We load image by image instead loading all images once which is different with the base code of 3DGS  
 
-we need to already train a 3DGS with xfeat feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
+command: 
+     python test_3dgs_with_moving_feat.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
+
+Preparation: 
+     we need to already train a 3DGS with xfeat feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
 Training image must be put in datasets/wholehead/
 
 """
 
-def getIntrinsic(view):
+def getIntrinsic(view, width, height):
     K = np.eye(3)
-    focal_length = fov2focal(view.FoVx, view.image_width)
+    focal_length = fov2focal(view.FoVx, width)
     K[0, 0] = K[1, 1] = focal_length
-    K[0, 2] = view.image_width / 2
-    K[1, 2] = view.image_height / 2
+    K[0, 2] = width / 2
+    K[1, 2] = height / 2
     return K
 
 def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_feat, chunk_size=10000):
@@ -171,23 +175,29 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
         prior_rErr = []
         prior_tErr = []
         inliers = []
+        list_ratio = []
 
         xfeat = XFeat(top_k=4096)
         
-        #gaussian_pcd = gaussians.get_xyz
-        #gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
         feat_pcd = torch.tensor(feat_pc.get_xyz).to("cuda")
         feat_feat = torch.tensor(feat_pc.get_semantic_feature.squeeze(-1)).to("cuda")
     
         for _, view in enumerate(tqdm(views, desc="Rendering progress")):
             
-            gt_im = view.original_image[0:3, :, :]
+            try:
+                image = Image.open(view.image_path) 
+            except:
+                print(f"Error opening image: {view.image_path}")
+                continue
+
+            original_image = image_process(image)
+            gt_im = original_image.cuda()
             # Extract sparse features
             gt_keypoints, _, gt_feature = xfeat.detectAndCompute(gt_im[None], 
                                                                  top_k=4096)[0].values()
 
             # Define intrinsic matrix
-            K = getIntrinsic(view)
+            K = getIntrinsic(view, original_image.shape[2], original_image.shape[1])
 
             start = time.time()
 
@@ -216,6 +226,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 
                  # Calculate the rotation and translation errors using existing function
                 rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
+                ratio = len(inl)/len(matched_3d)
 
                 # Print the errors
                 print(f"Coarse Rotation Error: {rotError} deg")
@@ -227,14 +238,17 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                     inliers.append(len(inl))
                     prior_rErr.append(rotError)
                     prior_tErr.append(transError)
+                    list_ratio.append(ratio)
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
-        mean_inliers = np.mean(inliers) 
+        mean_inliers = np.mean(inliers)
+        mean_ratio = np.mean(list_ratio) 
 
         print(f"Rotation Average Error: {err_mean_rot} deg ")
         print(f"Translation Average Error: {err_mean_trans} cm ") 
         print(f"Mean inliers : {mean_inliers}  ")
+        print(f"Mean ratio : {mean_ratio}  ")
 
        
 
@@ -243,7 +257,7 @@ def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args):
      #Load the feature point cloud
     feat_pc = FeatPointCloud()
     feat_pc.load_ply(os.path.join(dataset.model_path,"feature_point_cloud",
-                                                      "iteration_1000" ,
+                                                      "iteration_2000" ,
                                                       "feature_point_cloud.ply"))  
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False, load_gaussian=False)

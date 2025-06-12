@@ -169,7 +169,7 @@ def render_edit(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
             'feature_map': feature_map}
 
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,  render_width: int, render_height: int, scaling_modifier = 1.0, override_color = None):
     """
     Render the scene. 
     
@@ -187,8 +187,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
     raster_settings = GaussianRasterizationSettings(
-        image_height=int(viewpoint_camera.image_height),
-        image_width=int(viewpoint_camera.image_width),
+        image_height=render_height,
+        image_width=render_width,
         tanfovx=tanfovx,
         tanfovy=tanfovy,
         bg=bg_color,
@@ -236,10 +236,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         colors_precomp = override_color
     semantic_feature = pc.get_semantic_feature
-    var_loss = torch.zeros(1,viewpoint_camera.image_height,viewpoint_camera.image_width) ###d
+    var_loss = torch.zeros(1,render_height,render_width) ###d
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
-    rendered_image, feature_map, radii, depth, points_in_render_images, xy_to_3D_ranges = rasterizer(
+    rendered_image, feature_map, radii, depth = rasterizer(
         means3D = means3D,
         means2D = means2D,
         shs = shs,
@@ -257,7 +257,5 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "visibility_filter" : radii > 0,
             "radii": radii,
             'feature_map': feature_map,
-            "depth": depth, 
-            "points_in_render_images": points_in_render_images, 
-            "xy_to_3D_ranges": xy_to_3D_ranges} ###d
+            "depth": depth} ###d
 

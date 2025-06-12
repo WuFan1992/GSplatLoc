@@ -16,7 +16,7 @@ from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
-from utils.general_utils import safe_state
+from utils.general_utils import safe_state, image_process
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
@@ -39,6 +39,7 @@ from torch.utils.tensorboard import SummaryWriter
 from encoders.XFeat.modules.xfeat import XFeat
 from utils.pose_utils import getGTXYZ
 from scene.feat_pointcloud import FeatPointCloud
+from PIL import Image
 
 """
 python train.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
@@ -106,8 +107,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     # 2D semantic feature map CNN decoder
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-    #gt_feature_map = viewpoint_cam.semantic_feature.cuda()
-    #feature_out_dim = gt_feature_map.shape[0]
+
     feature_out_dim = 64
 
     
@@ -150,16 +150,24 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-
+        
+        # Load Image
+        try:
+            image = Image.open(viewpoint_cam.image_path) 
+        except:
+            print(f"Error opening image: {viewpoint_cam.image_path}")
+            continue
+        
+        original_image = image_process(image)
+        gt_image = original_image.cuda()
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, original_image.shape[2], original_image.shape[1])
         
 
         feature_map, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         #gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
         gt_feature_map = xfeat.get_descriptors(gt_image[None])[0]
@@ -181,7 +189,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussian_feat = gaussians.get_semantic_feature.squeeze(1)
         
         # Get the query image
-        query_img = viewpoint_cam.original_image[0:3, :, :]
+        query_img = gt_image
         
         # Extract sparse features    
         # # [1,C,H,W] = [1,3,480,640]
