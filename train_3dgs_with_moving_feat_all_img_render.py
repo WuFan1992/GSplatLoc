@@ -50,15 +50,56 @@ If we train with disk, we need to point out in the dataset_reader.py where to fi
 
 """
 
-def gen_coords(W, H):
-    x = torch.arange(W)
-    y = torch.arange(H)
-    xx, yy = torch.meshgrid(x, y, indexing='xy')  
-    xx = xx.T
-    yy = yy.T
-    coords = torch.stack([xx, yy], dim=2).view(-1, 2)
-    return coords
 
+def sample_random_points(height=480, width=640, cell_size=8, device='cuda'):
+    """
+			Divide the feature map [480,640] into several cells, each cell contains 
+            8x8 tensors. Randomly select a tensor in each cell 
+
+			input:
+				height : 480
+                width : 640
+                cell size : 8
+                device: cuda or cpu
+			return:
+				coordinate [4800, 2]
+    """
+    cell_rows = height // cell_size  # 60
+    cell_cols = width // cell_size   # 80
+    total_cells = cell_rows * cell_cols  # 4800
+
+    # Get the the top left tensor coordinate
+    y_starts = torch.arange(0, height, cell_size, device=device).repeat_interleave(cell_cols)
+    x_starts = torch.arange(0, width, cell_size, device=device).repeat(cell_rows)
+
+    # In each cell, randomly offset from 0 to 7 
+    offset = torch.randint(0, cell_size, size=(total_cells, 2), device=device)
+
+    # Final coordinate = top left + offset 
+    coords = torch.stack([x_starts, y_starts], dim=1) + offset  # shape: (4800, 2)
+
+    return coords.int()  # keep the int type for coordinate
+
+
+
+def sample_features(feature: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
+    # feature shape: (C, H, W)
+    C, H, W = feature.shape
+    N = coords.shape[0]
+    
+
+    x = coords[:, 0].long()
+    y = coords[:, 1].long()
+    
+    x = x.clamp(0, W - 1)
+    y = y.clamp(0, H - 1)
+    
+    flat_indices = y * W + x  # shape: (N,)
+    feature_flat = feature.view(C, -1)  # shape: (64, 480*640)
+    sampled = feature_flat[:, flat_indices]  # shape: (64, N)
+    
+    # Transpose(N, 64)
+    return sampled.t()
 
 def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_feat, chunk_size=10000):
     device = image_features.device
@@ -153,14 +194,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         
         #----- feature_map size [C,H,W] = [64,480,640]----#
-        orig_feature_map, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        render_feature_map, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         #gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
         gt_feature_map = xfeat.get_descriptors(gt_image[None])[0]
 
-        feature_map = F.interpolate(orig_feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
+        feature_map = F.interpolate(render_feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
         if dataset.speedup:
             feature_map = cnn_decoder(feature_map)
         Ll1_feature = l1_loss(feature_map, gt_feature_map) 
@@ -170,22 +211,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         """
         Move the matching gaussian to its Gt position
-        Here we divide the width and height by 4
+        Here we divide the width and height by 8
         
         """ 
         
-        render_coord =  gen_coords(80, 60).to("cuda")
-        orig_feature_map = F.interpolate(orig_feature_map.unsqueeze(0), size=(60, 80), mode='bilinear', align_corners=True).squeeze(0) #60x80
-        render_feat = orig_feature_map.view(64, -1).transpose(0, 1)
-
+        # Generate the sampling coordinates in [480, 640]
+        render_coord =  sample_random_points(render_feature_map.shape[1],render_feature_map.shape[2], cell_size=8, device="cuda")
         
+        # Sample the feature according to the coordinates
+        render_map = render_feature_map.clone().detach()
+        render_feat = sample_features(render_map, render_coord)
+
+        # Get the depth map and For each pixel in query image, find its coordinate in 3DGS      
         depth_map = render_pkg["depth"] 
-        depth_map = F.interpolate(depth_map.unsqueeze(0), size=(60, 80), mode='bilinear', align_corners=True).squeeze(0) #60x80
-        #For each pixel in query image, find its coordinate in 3DGS
-        query_keypoints_3d = getGTXYZ(viewpoint_cam.projection_matrix, viewpoint_cam.world_view_transform, render_coord, depth_map)
-
-
-        featpc.update_ply(query_keypoints_3d, render_feat)
+        render_keypoints_3d = getGTXYZ(viewpoint_cam.projection_matrix, viewpoint_cam.world_view_transform, render_coord, depth_map)
+        featpc.update_ply(render_keypoints_3d, render_feat)
         
         with torch.no_grad():
             # Progress bar

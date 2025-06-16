@@ -36,6 +36,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from diffestimator.model import *
 from scene.feat_pointcloud import *
+from utils.refiner import refiner, extract_patch_features_with_coords
 
 """
 usage:
@@ -174,6 +175,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
 
         prior_rErr = []
         prior_tErr = []
+        refine_rErr = []
+        refine_tErr = []
         inliers = []
         list_ratio = []
 
@@ -202,7 +205,8 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
             start = time.time()
 
             # Find initial pose prior via 2D-3D matching
-            with torch.no_grad():
+            #with torch.no_grad():
+            if True:
                 matched_2d, matched_3d, matched_3d_feature = find_2d3d_correspondences(
                     gt_keypoints,
                     gt_feature,
@@ -231,6 +235,38 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 # Print the errors
                 print(f"Coarse Rotation Error: {rotError} deg")
                 print(f"Coarse Translation Error: {transError} cm")
+                rotError_fine =0
+                transError_fine = 0
+                
+                # Extract 8x8 patch feature
+                gt_feature_map = xfeat.get_descriptors(gt_im[None])[0]
+                feature_map = F.interpolate(gt_feature_map.unsqueeze(0), size=(gt_im.shape[1], gt_im.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480 
+                
+                patch_feat, patch_coord = extract_patch_features_with_coords(torch.tensor(matched_2d).cuda(), feature_map)
+                patch_feat = F.normalize(patch_feat, dim=2)
+                
+                for i in range(4):
+                    view.update_RT(R.T, t[:,0])
+                    updated_matched_2d, updated_matched_3d = refiner(matched_2d, matched_3d,  matched_3d_feature ,view.full_proj_transform, feat_pcd, feat_feat, patch_coord, patch_feat)
+
+                    _, fine_R, fine_t, inl = cv2.solvePnPRansac(updated_matched_3d.cpu().numpy(), updated_matched_2d, 
+                                                  K, 
+                                                  distCoeffs=None, 
+                                                  flags=cv2.SOLVEPNP_ITERATIVE, 
+                                                  iterationsCount=args.ransac_iters
+                                                  )
+                
+                    fine_R, _ = cv2.Rodrigues(fine_R) 
+                    rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
+                
+                    
+                    matched_2d = updated_matched_2d
+                    matched_3d = updated_matched_3d
+                    R, t = fine_R, fine_t
+
+                
+                print(f"Fine Rotation Error: {rotError_fine} deg")
+                print(f"Fine Translation Error: {transError_fine} cm")
                 
                 
                 
@@ -239,14 +275,20 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                     prior_rErr.append(rotError)
                     prior_tErr.append(transError)
                     list_ratio.append(ratio)
+                    refine_rErr.append(rotError_fine)
+                    refine_tErr.append(transError_fine)
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
         mean_inliers = np.mean(inliers)
         mean_ratio = np.mean(list_ratio) 
+        err_mean_refine_rot = np.mean(refine_rErr)
+        err_mean_refine_trans = np.mean(refine_tErr) 
 
         print(f"Rotation Average Error: {err_mean_rot} deg ")
-        print(f"Translation Average Error: {err_mean_trans} cm ") 
+        print(f"Translation Average Error: {err_mean_trans} cm ")
+        print(f"Rotation Fine Average Error: {err_mean_refine_rot} deg ")
+        print(f"Translation Fine Average Error: {err_mean_refine_trans} cm ")  
         print(f"Mean inliers : {mean_inliers}  ")
         print(f"Mean ratio : {mean_ratio}  ")
 
@@ -257,7 +299,7 @@ def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args):
      #Load the feature point cloud
     feat_pc = FeatPointCloud()
     feat_pc.load_ply(os.path.join(dataset.model_path,"feature_point_cloud",
-                                                      "iteration_2000" ,
+                                                      "iteration_15000" ,
                                                       "feature_point_cloud.ply"))  
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False, load_gaussian=False)
