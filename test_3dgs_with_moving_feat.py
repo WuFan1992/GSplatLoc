@@ -247,7 +247,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 patch_feat = F.normalize(patch_feat, dim=2)
                 
                 
-                for i in range(4):
+                for i in range(10):
                     view.update_RT(R.T, t[:,0])
                     pnp_2d, pnp_3d, update_3d, update_3d_feat, update_2d, update_qpt, update_qfeat = refiner(matched_2d, matched_3d,  matched_3d_feature ,view.full_proj_transform, feat_pcd, feat_feat, patch_coord, patch_feat)
 
@@ -265,11 +265,11 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                     print(f"Fine Translation {i} Error: {transError_fine} cm")
                 
                     
-                    #matched_2d = update_2d
-                    #matched_3d = update_3d
-                    #matched_3d_feature = update_3d_feat
-                    #patch_coord = update_qpt
-                    #patch_feat = update_qfeat
+                    matched_2d = update_2d
+                    matched_3d = update_3d
+                    matched_3d_feature = update_3d_feat
+                    patch_coord = update_qpt
+                    patch_feat = update_qfeat
                     R, t = fine_R, fine_t
 
                 

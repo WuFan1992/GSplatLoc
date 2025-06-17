@@ -1,6 +1,7 @@
 
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 
 """
@@ -11,6 +12,12 @@ def ndc2pixel(v, S):
 
 
 def fullproj(point_3d, full_proj_matrix, W, H):
+    """
+    Project the 3D point cloud into pixel space
+    Using the 3DGS projection methods: World_coord --> Camera_coord 
+    --> NDC_coord--> Pixel_coord 
+    
+    """
     hom = torch.matmul(point_3d, full_proj_matrix)
     weight = 1.0/(hom[:,3] + 0.000001)
     return ndc2pixel(hom[:,0]*weight, W), ndc2pixel(hom[:,1]*weight, H)
@@ -19,34 +26,38 @@ def fullproj(point_3d, full_proj_matrix, W, H):
 
 def project_and_filter(points_3d, points_feat,P, W, H):
     """
-    points_3d: [N, 3] Tensor
-    P: [3, 4] 投影矩阵 Tensor
-    points_feat : [N, 64]: 
-    返回:
+    Project the 3D points into 2D pixel spaces with given projection matrix
+    The pixel that is projected out of the pixel space [0:W, 0:H] will be rejected
+    
+    Input:  
+         points_3d: [N, 3] Tensor
+         points_feat: [N,C] Tensor: the feature associated with each 3D points 
+         P: [3, 4] Projection Matrix Tensor
+
+    Return :
          mask 
-         result: [M, 5] Tensor, 每行是 [x, y, X, Y, Z]
-         points_feat_filter: [M, 64]
+         result: [M, 5] Tensor, Each line  [x, y, X, Y, Z] contains its pixel coordinates (x, y) and its asscociated 
+                 3D point cloud coordinates (X, Y , Z)   
+         points_feat_filter: [M, C] the feature of all the projected keypoint that is inside the pixel space 
     """
     N = points_3d.shape[0]
     
-    # 添加齐次坐标列 [X, Y, Z, 1]
+    # Construct homogeneous coordinates [X, Y, Z, 1]
     ones = torch.ones((N, 1), dtype=points_3d.dtype, device=points_3d.device)
     points_homogeneous = torch.cat([points_3d, ones], dim=1)  # [N, 4]
     
+    # Project 3D points into pixel space 
     x,y = fullproj(points_homogeneous, P, 640, 480)
     
-    
-    # 筛选条件：x ∈ (0, 640), y ∈ (0, 480)
+    # Keep only the projected pixel that is inside the pixel space ：x ∈ (0, 640), y ∈ (0, 480)
     mask = (x > 0) & (x < W) & (y > 0) & (y < H)
     
-
-    # 保留满足条件的点
     x_filtered = x[mask]
     y_filtered = y[mask]
     points_3d_filtered = points_3d[mask]  # [M, 3]
     points_feat_filtered = points_feat[mask]
 
-    # 拼接成 [M, 5]： [x, y, X, Y, Z]
+    # Concetenate to [M, 5]： [x, y, X, Y, Z]
     result = torch.cat([x_filtered.unsqueeze(1), 
                         y_filtered.unsqueeze(1), 
                         points_3d_filtered], dim=1)   
@@ -57,7 +68,8 @@ def project_and_filter(points_3d, points_feat,P, W, H):
 def get_cloest_3d_indice(midpixels, full_proj):
     """
     Objectif: For each midpixel, find its cloest pixel that correspond to a 3D points
-              in SFM
+              in SFM. This indice will then be used to find its correspondance 3D coordinates
+              
     Input:
               midpixels : [N, 2]
               full_proj: [M, 2] All the proj pixel from 3D points
@@ -66,62 +78,42 @@ def get_cloest_3d_indice(midpixels, full_proj):
     
     """
     # Get the index for each midpoints
-    # A: [N, 1, 2], B: [1, M, 2] => 广播得到 [N, M, 2]
+    # A: [N, 1, 2], B: [1, M, 2] =>  [N, M, 2]
     diff = midpixels[:, None, :] - full_proj[None, :, :]  # pairwise differences
     
-    # 欧几里得距离（不取 sqrt 保持效率）
+    # Euclidean distance squared (without sqrt for efficiency)
     dists = (diff ** 2).sum(dim=2)  # shape [N, M]
 
-    # 每行最小值的索引，即 A 中每个点最近的 B 中的点的索引
+    # Indices of minimum values per row, corresponding to nearest B point for each A point
     nearest_indices = torch.argmin(dists, dim=1)  # shape [N]
     
     return nearest_indices.cpu().numpy() 
     
 
 
-def get_updated_3d_indice(query_kp, query_feats, render_kp, render_feats, device= 'cuda'):
+
+def get_midpoints(query_kp, proj_kp, device='cuda'):
     """
+    Get the midpoints coordinates.
+    After matching 2D query feature keypoint with 3D SFM points, We project the matching 3D SFM points into 
+    pixel space. We firstly connect each project pixel with its matching pixel in query feature map. If the matching points 
+    is correct, all the pixel(query)-pixel(proj) "connection" will be parellel.
+    So according to each connection, we use the optimization process to get this parellel line that begins at each project pixel 
+    with less angle difference sum with its original connection. Then the midpoint will be found along side each parellel line
+    that takes half of the original connection distance
+    
+    Objectif: Push the projected pixel into query pixel. Similar to Gradient descent, The parellel line work as the moving direction and 
+              the distance work as the step    
+    
     query_kp : tensor [N, 2]
-    render_kp: tensor [N, 2]
-    """
-    # Find the middle coordinate
-    midpoints = get_midpoints(query_kp, render_kp)
-    
-    # Get the 64 neibors pixels of midpoints for refinement
-    mid_neigbor_pts, mid_neigbor_feats = knn(midpoints, render_kp, render_feats) 
-    
-    # Get the 64 neibors pixel of query keypoints (one time)
-    query_neigbor_pts, query_neigbor_feats = knn(query_kp, render_kp, render_feats)
-    
-    # Get the  
-    
-    # Get the index for each midpoints
-    # A: [N, 1, 2], B: [1, M, 2] => 广播得到 [N, M, 2]
-    diff = midpoints[:, None, :] - projected_points[None, :, :]  # pairwise differences
-
-    # 欧几里得距离（不取 sqrt 保持效率）
-    dists = (diff ** 2).sum(dim=2)  # shape [N, M]
-
-    # 每行最小值的索引，即 A 中每个点最近的 B 中的点的索引
-    nearest_indices = torch.argmin(dists, dim=1)  # shape [N]
-    
-    return nearest_indices.cpu().numpy()
-
-
-def get_midpoints(query_kp, render_kp, device='cuda'):
-    """
-    query_kp : tensor [N, 2]
-    render_kp: tensor [N, 2]
+    proj_kp: tensor [N, 2]
     """
     # Set devices 
-    query_kp, render_kp = query_kp.to(device).float(), render_kp.to(device).float()
-    
-
-    
-    # 初始化一个随机方向向量 d，并让它可导
+    query_kp, proj_kp = query_kp.to(device).float(), proj_kp.to(device).float()
+        
+    # Initialize a random direction vector d and make it differentiable
     d = torch.randn(2, device=device, requires_grad=True)
     
-
     optimizer = torch.optim.Adam([d], lr=0.05)
     
     previous_loss = 0
@@ -129,16 +121,17 @@ def get_midpoints(query_kp, render_kp, device='cuda'):
     for step in range(1000):
         optimizer.zero_grad()
 
-        d_norm = d / torch.norm(d)  # 单位向量方向
+        d_norm = d / torch.norm(d)  # Unit vector direction 
 
-        # 每个 ai-Ai 向量
-        seg_vecs = query_kp - render_kp
+        # Calculate the difference vector between each pair of query keypoint and matched project keypoint in pixel space
+        seg_vecs = query_kp - proj_kp
         seg_lengths = torch.norm(seg_vecs, dim=1)
 
-        # 计算余弦夹角的 cos 值
+        # Compute the cosine similarity
         cos_angles = torch.sum(seg_vecs * d_norm, dim=1) / seg_lengths
 
-        # 优化目标：最小化总夹角，即最大化 cos，总损失设为 (1 - cos)
+        # Optimization objective: minimize the total angle, i.e., maximize the cosine. 
+        # The total loss is defined as (1 - cos).
         loss = torch.sum(1 - cos_angles)
         if abs(loss.item() - previous_loss) < 0.001:
             break
@@ -146,50 +139,67 @@ def get_midpoints(query_kp, render_kp, device='cuda'):
         loss.backward()
         optimizer.step()
         previous_loss = loss.item()
-
+        """
         if step % 100 == 0:
             print(f"Step {step}, Loss: {loss.item()}")
-
-    # 最终方向向量（单位化）
+        """
+    # Final direction vector (normalized)
     final_d = d / torch.norm(d)
     # final midpoints
-    midpoits = render_kp + 0.5 * seg_lengths.view(-1, 1) * final_d.view(1, 2)
+    midpoits = proj_kp + 0.5 * seg_lengths.view(-1, 1) * final_d.view(1, 2)
     
     return midpoits
 
+def generate_mask_matrix(rows, cols, num_true, device='cuda'):
+    # Step 1: Randomly sample indices of shape [rows, num_true]
+    # For each row, generate all column indices, shuffle them, and pick the first num_true
+    all_indices = torch.rand(rows, cols, device=device).argsort(dim=1)
+    true_indices = all_indices[:, :num_true]  # [rows, num_true]
 
+    # Step 2: Prepare batch indices [0, 1, ..., rows-1], repeated num_true times for scatter
+    row_indices = torch.arange(rows, device=device).unsqueeze(1).expand(-1, num_true)
+
+    # Step 3: Create an all-False mask, then scatter to set True at specific positions
+    mask = torch.zeros((rows, cols), dtype=torch.bool, device=device)
+    mask[row_indices, true_indices] = True
+
+    return mask
 
 
 def knn(A, B, B_3D, F, k=64):
     """
-    对每个 A[i] 找出最近的 k 个 B[j]，并提取对应坐标与特征
+    For each point A[i], find the k nearest neighbors from B[j], and extract their corresponding coordinates and features.
+    Here I use a random trick. That firstly get 2*k nearest neighbors and then randomly select k neigbors. This is proved to
+    be more accurate 
+    Parameters:
+         A: [N,2] Query points
+         B: [M,2] All point coordinates
+         B_3D: [M,3] All 3D coordinates
+         F: [M,64][M,64] All point features
+         k: int Number of nearest neighbors to return for each query point
 
-    参数:
-        A: [N, 2] 查询点
-        B: [M, 2] 所有点坐标
-        B_3D :[M, 3] All
-        F: [M, 64] 所有点特征
-        k: int, 每个查询点返回最近的 k 个点
-
-    返回:
+    Return:
         B_coords_selected: [N, k, 2]
         B_feats_selected:  [N, k, 64]
         B_3d_coords : [N, K, 3]
     """
     device = A.device
     N, M = A.shape[0], B.shape[0]
-
-    dists = torch.cdist(A, B, p=2)  # 欧氏距离 [N, M]
     
+    # Generate the random mask
+    mask = generate_mask_matrix(N,2*k, k)
 
-    # 找到前 k 个最小距离的索引
-    knn_dists, knn_indices = torch.topk(dists, k=k, dim=1, largest=False)
+    dists = torch.cdist(A, B, p=2)  # Euclidean distance [N, M]
+    
+    # Find the indices of the k smallest distances
+    knn_dists, knn_indices = torch.topk(dists, k=2*k, dim=1, largest=False)
 
-    # 获取对应的 B 坐标和特征
-    B_coords_selected = B[knn_indices]    # [N, k, 2]
-    B_feats_selected = F[knn_indices]     # [N, k, 64]
-    B_3D_selected = B_3D[knn_indices]
 
+    # Retrieve the corresponding coordinates (2D and 3D) and features from B 
+    B_coords_selected = B[knn_indices*mask]    # [N, k, 2]
+    B_feats_selected = F[knn_indices*mask]     # [N, k, 64]
+    B_3D_selected = B_3D[knn_indices*mask]
+    
     return B_coords_selected, B_feats_selected, B_3D_selected
 
 
@@ -197,11 +207,12 @@ def knn(A, B, B_3D, F, k=64):
 
 def mnn_match(corr_matrix):
     """
-    corr_matrix: [N, 64, 64] on CUDA
+    mutual nearest neighbor
+    corr_matrix: [N, 64, 64] 
     Returns:
-        A_indices: (N, K) long tensor of A indices (padded)
-        B_indices: (N, K) long tensor of B indices (padded)
-        mask: (N, K) bool tensor where mask[i, j] = True means (A_indices[i, j], B_indices[i, j]) is valid MNN
+        padded_a: (N, K) long tensor of A indices (padded)
+        padded_b: (N, K) long tensor of B indices (padded)
+        mask: (N, K) bool tensor where mask[i] = True means (padded_a[i], padded_b[i]) is valid MNN
     """
     N, A, B = corr_matrix.shape
     device = corr_matrix.device
@@ -250,43 +261,42 @@ def dual_softmax(corr_matrix, temp=1):
 
 def extract_patch_features_with_coords(A, fmap, patch_size=8):
     """
-    提取以 A 中每个点为中心的 8x8 patch 特征和像素坐标。
+   Extract 8x8 patch features and pixel coordinates centered at each point in A.
+   Parameters:
+        A: [N, 2]  tensor of pixel coordinates (x, y)
+        fmap: [C, H, W] feature map tensor
+        patch_size: size of the patch, default is 8
 
-    参数:
-        A: [N, 2] Tensor，坐标为 (x, y) 像素坐标
-        fmap: [C, H, W] Tensor，特征图
-        patch_size: patch 大小，默认 8
-
-    返回:
-        patch_feats:  [N, 64, C]  - 每个点的 patch 特征
-        patch_coords: [N, 64, 2]  - 每个点的 patch 像素坐标 (x, y)
+    Return:
+        patch_feats:  [N, 64, C]  - patch features for each point
+        patch_coords: [N, 64, 2]  - pixel coordinates (x, y) of each path
     """
     device = fmap.device
     N = A.shape[0]
     C, H, W = fmap.shape
     half = patch_size // 2
 
-    # 归一化 A 的坐标到 [-1, 1] 用于 grid_sample
+    # Normalize the coordinates of A to the range [-1, 1] for use with grid_sample
     norm_x = (A[:, 0] / (W - 1)) * 2 - 1
     norm_y = (A[:, 1] / (H - 1)) * 2 - 1
 
-    # 构建 8x8 网格偏移（像素单位）
+    # Construct an 8x8 grid of pixel offsets
     offset = torch.linspace(-half + 0.5, half - 0.5, steps=patch_size).to(device)
     dy, dx = torch.meshgrid(offset, offset, indexing='ij')  # [8, 8]
     grid_offsets = torch.stack((dx, dy), dim=-1).view(1, patch_size * patch_size, 2)  # [1, 64, 2]
     grid_offsets = grid_offsets.expand(N, -1, -1)  # [N, 64, 2]
 
-    # 实际像素坐标（未归一化）
+    # Actual pixel coordinates (unnormalized)
     A_pixel = A.unsqueeze(1)  # [N, 1, 2]
     patch_coords = A_pixel + grid_offsets  # [N, 64, 2]
 
-    # 构造 grid_sample 使用的归一化坐标
+    # Construct normalized coordinates for grid_sample
     norm_offsets = grid_offsets / torch.tensor([W - 1, H - 1], device=device) * 2
     centers = torch.stack([norm_x, norm_y], dim=1).unsqueeze(1)  # [N, 1, 2]
     sample_grid = centers + norm_offsets  # [N, 64, 2]
     sample_grid = sample_grid.view(N, patch_size, patch_size, 2).float()  # [N, 8, 8, 2]
 
-    # 使用 grid_sample 提取特征
+    # Extract features using grid_sample
     fmap = fmap.unsqueeze(0).expand(N, -1, -1, -1)  # [N, C, H, W]
     patch = F.grid_sample(fmap, sample_grid, mode='bilinear', align_corners=True)  # [N, C, 8, 8]
     patch_feats = patch.permute(0, 2, 3, 1).reshape(N, patch_size * patch_size, C)  # [N, 64, C]
@@ -304,27 +314,29 @@ def get_query_coord_from_index(idx_tensor,coords_tensor, dim=2):
            q_coords: [N, K, 2]
     
     """
-    # Step 1: 将无效索引 -1 替换为 0（gather 不支持负数索引）
+    # Step 1: Replace invalid indices (-1) with 0 because gather doesn't support negative indices
     safe_idx = idx_tensor.clone()
     safe_idx[safe_idx == -1] = 0  # shape: [B, K]
 
-    # Step 2: 为 gather 做准备 → 需要扩展为 [B, K, 1] 以匹配坐标最后一维
+    # Step 2: Expand indices to [B, K, 1] to match coordinate tensor shape for gather
     safe_idx_expanded = safe_idx.unsqueeze(-1)  # [B, K, 1]
 
-    # Step 3: gather 在 dim=1 上提取坐标
+    # Step 3: Gather coordinates along dim=1 using the prepared indices
     # coords_tensor shape: [B, 64, 2] → 从 dim=1 上索引
     gathered_coords = torch.gather(coords_tensor, dim=1, index=safe_idx_expanded.expand(-1, -1, dim))  # [B, K, 2]
-    print("gathered_coords shape = ", gathered_coords.shape)
 
-    # Step 4: 对原来是 -1 的位置，将坐标清零（或其他处理）
+    # Step 4: Zero out coordinates at positions corresponding to original -1 indices
     mask = (idx_tensor == -1).unsqueeze(-1).expand(-1, -1, dim)  # [B, K, 2]
 
-    # 将原先是 -1 的坐标位置设为 0
-    gathered_coords = gathered_coords.masked_fill(mask, 0.0)  # 或 float('nan') 视情况而定
+    # Step 5 : Set coordinates to zero at positions where original indices were -1
+    gathered_coords = gathered_coords.masked_fill(mask, 0.0)  
     
     return gathered_coords
 
 def remove_invalid(mat):
+    """
+    Remove the coordinate that has 0 (which means invalid coordinates)
+    """
     mask = mat.any(dim=-1)
     return mat[mask]
 
@@ -337,8 +349,26 @@ Main function
 """
 def refiner(matched_2d, matched_3d, matched_3d_feature,  full_proj_matrix, feat_pcd, feat_feat, query_neigbor_pts, query_neigbor_feats):
     """
+    Refine the coarse pose
+    Input:
+         matched_2d: numpy array [N,2] the matched query feature map keypoint(pixel) coordinates
+         matched_3d: numpy array [N,3] the matched 3D SFM keypoint(3d) coordinates
+         matched_3d_feature: tenosr [N, C] the matched 3D SFM keypoint(3d) feature
+         full_proj_matrix: the world-to-pixel projection matrix 
+         feat_pcd: tensor [M, 3]the SFM point cloud coordinates
+         feat_feat: tensor [M, C] the SFM point cloud feature
+         query_neigbor_pts: tensor [N, 64, 2] For each keypoint(pixel) in query feature map, gets its 8x8 neigbor pixels' coordinates 
+         query_neigbor_feats : tensor [N, 64, C] For each keypoint(pixel) in query feature map, gets its 8x8 neigbor pixels' coordinates
+    
     return value:
-         matched_2d : [N,2]
+         q_pixel : [L,2]  all the neighbor pixels that has a match with 3D SFM point, which is then use to calculate PnP
+         proj_3d: [L,3]  all the 3D SFM point that match with q_pixel, which is then use to calculate PnP
+         temp_kp_3d : [Z, 3] the 3D coords of each midpoints
+         temp_kp_3d_feat : [Z, C] the feature of midpoints
+         matched_2d[mask]: updated (reject all the proj pixel that is outside of the space) matched query 2D keypoint (pixel) 
+         query_neigbor_pts[mask]: updated query keypoints neighbor pixles 
+         query_neigbor_feats[mask]: updated query keypoint neighbor pixels features
+         
          updated_matched_3d : [N, 3]
     """
     # Project the matched 3d into 2D pixel space and keep
@@ -347,13 +377,24 @@ def refiner(matched_2d, matched_3d, matched_3d_feature,  full_proj_matrix, feat_
     mask, matched_3d_proj, _ = project_and_filter(matched_3d, matched_3d_feature, full_proj_matrix, 640, 480)
     mask = mask.cpu().numpy()
     
-    # Project the point cloud to 2D pixel space and keep 
+    # Project the whole point cloud to 2D pixel space and keep 
     # only the pixel that is inside the image
     _, pixel_pc, pixel_feat =  project_and_filter(feat_pcd, feat_feat, full_proj_matrix, 640, 480)
     
     
     # Get the midpoints
+    """
+    Two choices: 
+    1. Use the midpoints, which means that the refinement follows the updated position with each step  
+    """
     midpoints = get_midpoints(torch.tensor(matched_2d[mask]), matched_3d_proj[:,:2])
+    
+    """
+    2. Keep the refinement only in the neiborhood of project pixel without updating its position.
+       This is proved to be more accurate the choice 1
+    """
+    #midpoints = matched_3d_proj[:,:2]
+    
     
     # Get the cloest pixel that match a 3D points in SFM
     matches = get_cloest_3d_indice(midpoints, pixel_pc[:,:2])
@@ -397,12 +438,6 @@ def refiner(matched_2d, matched_3d, matched_3d_feature,  full_proj_matrix, feat_
     
     return  q_pixel, proj_3d, temp_kp_3d, temp_kp_3d_feat, matched_2d[mask], query_neigbor_pts[mask], query_neigbor_feats[mask]
 
-    
 
-    
-    # update the 3D position of each keypoint
-    #matches = get_updated_3d_indice(torch.tensor(matched_2d[mask]), matched_3d_proj[:,:2], pixel_pc[:,:2])
-    
-    #return matched_2d[mask], pixel_pc[:,2:][matches]    
 
 
