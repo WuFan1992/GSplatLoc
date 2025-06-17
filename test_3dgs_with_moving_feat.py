@@ -214,6 +214,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                     feat_feat
                 )
                 
+                
                 # get the coarse pose 
                 _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K, 
@@ -245,11 +246,12 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 patch_feat, patch_coord = extract_patch_features_with_coords(torch.tensor(matched_2d).cuda(), feature_map)
                 patch_feat = F.normalize(patch_feat, dim=2)
                 
+                
                 for i in range(4):
                     view.update_RT(R.T, t[:,0])
-                    updated_matched_2d, updated_matched_3d = refiner(matched_2d, matched_3d,  matched_3d_feature ,view.full_proj_transform, feat_pcd, feat_feat, patch_coord, patch_feat)
+                    pnp_2d, pnp_3d, update_3d, update_3d_feat, update_2d, update_qpt, update_qfeat = refiner(matched_2d, matched_3d,  matched_3d_feature ,view.full_proj_transform, feat_pcd, feat_feat, patch_coord, patch_feat)
 
-                    _, fine_R, fine_t, inl = cv2.solvePnPRansac(updated_matched_3d.cpu().numpy(), updated_matched_2d, 
+                    _, fine_R, fine_t, inl = cv2.solvePnPRansac(pnp_3d.cpu().numpy(), pnp_2d.cpu().numpy(), 
                                                   K, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
@@ -258,10 +260,16 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 
                     fine_R, _ = cv2.Rodrigues(fine_R) 
                     rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
+                    
+                    print(f"Fine Rotation {i} Error: {rotError_fine} deg")
+                    print(f"Fine Translation {i} Error: {transError_fine} cm")
                 
                     
-                    matched_2d = updated_matched_2d
-                    matched_3d = updated_matched_3d
+                    #matched_2d = update_2d
+                    #matched_3d = update_3d
+                    #matched_3d_feature = update_3d_feat
+                    #patch_coord = update_qpt
+                    #patch_feat = update_qfeat
                     R, t = fine_R, fine_t
 
                 

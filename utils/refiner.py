@@ -160,19 +160,21 @@ def get_midpoints(query_kp, render_kp, device='cuda'):
 
 
 
-def knn(A, B, F, k=64):
+def knn(A, B, B_3D, F, k=64):
     """
     对每个 A[i] 找出最近的 k 个 B[j]，并提取对应坐标与特征
 
     参数:
         A: [N, 2] 查询点
         B: [M, 2] 所有点坐标
+        B_3D :[M, 3] All
         F: [M, 64] 所有点特征
         k: int, 每个查询点返回最近的 k 个点
 
     返回:
         B_coords_selected: [N, k, 2]
         B_feats_selected:  [N, k, 64]
+        B_3d_coords : [N, K, 3]
     """
     device = A.device
     N, M = A.shape[0], B.shape[0]
@@ -186,8 +188,9 @@ def knn(A, B, F, k=64):
     # 获取对应的 B 坐标和特征
     B_coords_selected = B[knn_indices]    # [N, k, 2]
     B_feats_selected = F[knn_indices]     # [N, k, 64]
+    B_3D_selected = B_3D[knn_indices]
 
-    return B_coords_selected, B_feats_selected
+    return B_coords_selected, B_feats_selected, B_3D_selected
 
 
 
@@ -238,11 +241,6 @@ def mnn_match(corr_matrix):
 
     return padded_a, padded_b, mask
         
-        
-    
-         
-
-
 
 def dual_softmax(corr_matrix, temp=1):
     corr_matrix = corr_matrix / temp
@@ -294,6 +292,43 @@ def extract_patch_features_with_coords(A, fmap, patch_size=8):
     patch_feats = patch.permute(0, 2, 3, 1).reshape(N, patch_size * patch_size, C)  # [N, 64, C]
 
     return patch_feats, patch_coords  # [N, 64, C], [N, 64, 2]
+
+def get_query_coord_from_index(idx_tensor,coords_tensor, dim=2):
+    """
+    Get the matching pixel coords in query image, given by coords_tensor.
+    idx_tensor : [N, K] N is the number of pixels and K is the number of index for each pixels
+                It is -1 padding 
+    coords_tensor: [N, 64, 2]: pixel coordinates within a 8x8 regional patch 
+    
+    return:
+           q_coords: [N, K, 2]
+    
+    """
+    # Step 1: 将无效索引 -1 替换为 0（gather 不支持负数索引）
+    safe_idx = idx_tensor.clone()
+    safe_idx[safe_idx == -1] = 0  # shape: [B, K]
+
+    # Step 2: 为 gather 做准备 → 需要扩展为 [B, K, 1] 以匹配坐标最后一维
+    safe_idx_expanded = safe_idx.unsqueeze(-1)  # [B, K, 1]
+
+    # Step 3: gather 在 dim=1 上提取坐标
+    # coords_tensor shape: [B, 64, 2] → 从 dim=1 上索引
+    gathered_coords = torch.gather(coords_tensor, dim=1, index=safe_idx_expanded.expand(-1, -1, dim))  # [B, K, 2]
+    print("gathered_coords shape = ", gathered_coords.shape)
+
+    # Step 4: 对原来是 -1 的位置，将坐标清零（或其他处理）
+    mask = (idx_tensor == -1).unsqueeze(-1).expand(-1, -1, dim)  # [B, K, 2]
+
+    # 将原先是 -1 的坐标位置设为 0
+    gathered_coords = gathered_coords.masked_fill(mask, 0.0)  # 或 float('nan') 视情况而定
+    
+    return gathered_coords
+
+def remove_invalid(mat):
+    mask = mat.any(dim=-1)
+    return mat[mask]
+
+    
     
     
 """
@@ -323,16 +358,16 @@ def refiner(matched_2d, matched_3d, matched_3d_feature,  full_proj_matrix, feat_
     # Get the cloest pixel that match a 3D points in SFM
     matches = get_cloest_3d_indice(midpoints, pixel_pc[:,:2])
     temp_kp_3d = pixel_pc[:,2:][matches]
+    temp_kp_3d_feat = pixel_feat[matches]
     
     # Get the neigbor pixel of midpoints
-    mid_neigbor_pts, mid_neigbor_feats = knn(midpoints, pixel_pc[:,:2], pixel_feat)
+    _, mid_neigbor_feats, mid_neigbor_3d =  knn(midpoints, pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
     
 
     # Normalize the feature 
     mid_neigbor_feats = F.normalize(mid_neigbor_feats, dim=2) 
     
 
-    
     # Get the correlation matrix
     fine_corr_matrix = torch.matmul(
             mid_neigbor_feats, query_neigbor_feats[mask].transpose(-2, -1)
@@ -343,14 +378,25 @@ def refiner(matched_2d, matched_3d, matched_3d_feature,  full_proj_matrix, feat_
         )
 
 
-    L_A2B, L_B2A, mask = mnn_match(
+    L_A2B, L_B2A, mask_mnn = mnn_match(
             fine_corr_matrix
         )
     
-    print("L_A2B = ", L_A2B)
-    print("mask = ", mask)
-
     
+    # Get the query image 2D pixel coords
+    q_pixel = get_query_coord_from_index(L_B2A, query_neigbor_pts[mask])  # [N, K, 2]
+    
+    # Get the proj mid neigbor pixel
+    proj_3d = get_query_coord_from_index(L_A2B, mid_neigbor_3d, dim=3) # [N,K,3]
+
+         
+    # return the 2D pixels and 3D points matching and the new midpoint 3D position
+    q_pixel = remove_invalid(q_pixel)
+    proj_3d = remove_invalid(proj_3d)
+    
+    
+    return  q_pixel, proj_3d, temp_kp_3d, temp_kp_3d_feat, matched_2d[mask], query_neigbor_pts[mask], query_neigbor_feats[mask]
+
     
 
     
