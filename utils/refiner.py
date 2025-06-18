@@ -6,6 +6,37 @@ import torch.optim as optim
 import cv2
 
 """
+Introduction: 
+     The refinement problem can be consider as an optimization problem 
+     Two variable to be optimized: SFM 3D matched point and Pose
+     We know that if both the 3D matched point and Pose is correct. The projection of 3D matched point 
+     will be exactly at the same position as the query 2D keypoint. 
+     
+     Now we have a Coarse pose given by 2D 3D matching
+     The refinement will be composed as the following step:
+        * For each iteration:
+             * For each matching 3D point,  project it into pixel space    
+             Optimize the Pose (fix the 3D position): 
+                 * Get the 8x8 neighbor pixel feature A of matched query keypoint (2D)
+                 * Project the whole SFM with given pose and get a sparse projection feature map. 
+                 * Project the matched 3D SFM into the same sparse feature map and for each projection get the 32 cloest points 
+                   (each point correspond a point in SFM) and its feature B
+                 * Dense matching A and B then using PnP to calculate the updated pose P 
+        
+              Optimize the 3D matched position (fix the pose):
+                  * Project the matched 3D position into pixel space, calculate the loss between p
+                    projected position adn query matched keypoint(2D), Use this loss to update the
+                    position of 3D and repeat it several times
+    
+    The optimization process is like Bundle ajustment(BA). The difference is that we alternatively optimize the pose and 3D position instead 
+    of optimize them together jointly as BA does. For updating the pose, we use the neighbor feature instead of purely geometry as BA.
+    
+    This optimization face the local minimum problem so we add the random inside the process. When optimize the pose, for each projected macthed 3D, we firstly choose 64 
+    cloest points and then randomly select 32 to have its feature 
+
+"""
+
+"""
 Full projection Function
 """
 def ndc2pixel(v, S):
@@ -91,23 +122,7 @@ def get_cloest_3d_indice(midpixels, full_proj):
     return nearest_indices.cpu().numpy() 
     
 
-def optimize_3D(X_3D, x_2d, full_proj, steps=100):
-    
-    N = X_3D.shape[0]
-    x_2d = torch.tensor(x_2d).cuda()
-    # Construct homogeneous coordinates [X, Y, Z, 1]
-    ones = torch.ones((N, 1), dtype=X_3D.dtype, device=X_3D.device)
-    X_3D = torch.cat([X_3D, ones], dim=1)  # [N, 4]
-    X_3D.requires_grad = True
-    optimizer = optim.Adam([X_3D], lr=1e-2)
-    for _ in range(steps):
-        optimizer.zero_grad()
-        x, y = fullproj(X_3D, full_proj,640, 480)
-        x_proj = torch.cat([x.unsqueeze(1), y.unsqueeze(1)], dim=1)
-        loss = ((x_proj - x_2d) ** 2).mean()
-        loss.backward()
-        optimizer.step()
-    return X_3D[:, :3]
+
 
 
 
@@ -302,20 +317,25 @@ def remove_invalid(mat):
     return mat[mask]
 
     
-    
-    
-"""
-Main function 
-
-"""
-
-
 
 def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, query_neigbor_feats, mask):
+    """
+      Get the neigbor region feature for both query matched 2D keypoint and projected 3D matched point
+      The matching is valid when they are mutual nearest matching (MNN)
+      
+      Input:
+         matched_3d_proj: [N, 2] the pixel coordinate of all the matched 3D points
+         pixel_pc : [M, 2] all the projected points from SFM , keep only the points that project inside the image 
+         pixel_feat: [M, C]:  all the projected points feature (the same, inside the image)from SFM 
+         query_neigbor_pts: tensor [N, 64, 2] For each keypoint(pixel) in query feature map, gets its 8x8 neigbor pixels' coordinates 
+         query_neigbor_feats : tensor [N, 64, C] For each keypoint(pixel) in query feature map, gets its 8x8 neigbor pixels' coordinates
+         mask: keep only the matched 3D points whose projection is inside the image 
+       Output:
+          q_pixel: updated query neigbor matched corrdinate
+          proj_3d: update sfm neigbor matched coordinate 
     
-   
-    
-     # Get the neigbor pixel of midpoints
+    """    
+     # Get the neigbor pixel of projected 3D matched points
     _, proj_neigbor_feats, proj_neigbor_3d =  knn(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
     
 
@@ -353,6 +373,8 @@ def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, 
     return  q_pixel, proj_3d
 
 def optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask, K):
+    """ Optimize the Pose
+    """
     
     # Get the update 2D 3D pairs using its neighbor pixel
     pnp_2d, pnp_3d = get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask)
@@ -368,7 +390,24 @@ def optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, que
     
     return fine_R, fine_t, inl
     
-    
+def optimize_3D(X_3D, x_2d, full_proj, steps=100):
+    """ Optimize the 3D position
+    """
+    N = X_3D.shape[0]
+    x_2d = torch.tensor(x_2d).cuda()
+    # Construct homogeneous coordinates [X, Y, Z, 1]
+    ones = torch.ones((N, 1), dtype=X_3D.dtype, device=X_3D.device)
+    X_3D = torch.cat([X_3D, ones], dim=1)  # [N, 4]
+    X_3D.requires_grad = True
+    optimizer = optim.Adam([X_3D], lr=1e-2)
+    for _ in range(steps):
+        optimizer.zero_grad()
+        x, y = fullproj(X_3D, full_proj,640, 480)
+        x_proj = torch.cat([x.unsqueeze(1), y.unsqueeze(1)], dim=1)
+        loss = ((x_proj - x_2d) ** 2).mean()
+        loss.backward()
+        optimizer.step()
+    return X_3D[:, :3]
 
 
 def refiner(matched_2d, matched_3d, matched_3d_feature, view, feat_pcd, feat_feat, query_neigbor_pts, query_neigbor_feats,K):
@@ -383,6 +422,7 @@ def refiner(matched_2d, matched_3d, matched_3d_feature, view, feat_pcd, feat_fea
          feat_feat: tensor [M, C] the SFM point cloud feature
          query_neigbor_pts: tensor [N, 64, 2] For each keypoint(pixel) in query feature map, gets its 8x8 neigbor pixels' coordinates 
          query_neigbor_feats : tensor [N, 64, C] For each keypoint(pixel) in query feature map, gets its 8x8 neigbor pixels' coordinates
+         K: camera intrinsic
     
     """
     
