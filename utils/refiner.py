@@ -2,7 +2,8 @@
 import torch
 import torch.nn.functional as F
 import numpy as np
-
+import torch.optim as optim
+import cv2
 
 """
 Full projection Function
@@ -90,65 +91,25 @@ def get_cloest_3d_indice(midpixels, full_proj):
     return nearest_indices.cpu().numpy() 
     
 
-
-
-def get_midpoints(query_kp, proj_kp, device='cuda'):
-    """
-    Get the midpoints coordinates.
-    After matching 2D query feature keypoint with 3D SFM points, We project the matching 3D SFM points into 
-    pixel space. We firstly connect each project pixel with its matching pixel in query feature map. If the matching points 
-    is correct, all the pixel(query)-pixel(proj) "connection" will be parellel.
-    So according to each connection, we use the optimization process to get this parellel line that begins at each project pixel 
-    with less angle difference sum with its original connection. Then the midpoint will be found along side each parellel line
-    that takes half of the original connection distance
+def optimize_3D(X_3D, x_2d, full_proj, steps=100):
     
-    Objectif: Push the projected pixel into query pixel. Similar to Gradient descent, The parellel line work as the moving direction and 
-              the distance work as the step    
-    
-    query_kp : tensor [N, 2]
-    proj_kp: tensor [N, 2]
-    """
-    # Set devices 
-    query_kp, proj_kp = query_kp.to(device).float(), proj_kp.to(device).float()
-        
-    # Initialize a random direction vector d and make it differentiable
-    d = torch.randn(2, device=device, requires_grad=True)
-    
-    optimizer = torch.optim.Adam([d], lr=0.05)
-    
-    previous_loss = 0
-
-    for step in range(1000):
+    N = X_3D.shape[0]
+    x_2d = torch.tensor(x_2d).cuda()
+    # Construct homogeneous coordinates [X, Y, Z, 1]
+    ones = torch.ones((N, 1), dtype=X_3D.dtype, device=X_3D.device)
+    X_3D = torch.cat([X_3D, ones], dim=1)  # [N, 4]
+    X_3D.requires_grad = True
+    optimizer = optim.Adam([X_3D], lr=1e-2)
+    for _ in range(steps):
         optimizer.zero_grad()
-
-        d_norm = d / torch.norm(d)  # Unit vector direction 
-
-        # Calculate the difference vector between each pair of query keypoint and matched project keypoint in pixel space
-        seg_vecs = query_kp - proj_kp
-        seg_lengths = torch.norm(seg_vecs, dim=1)
-
-        # Compute the cosine similarity
-        cos_angles = torch.sum(seg_vecs * d_norm, dim=1) / seg_lengths
-
-        # Optimization objective: minimize the total angle, i.e., maximize the cosine. 
-        # The total loss is defined as (1 - cos).
-        loss = torch.sum(1 - cos_angles)
-        if abs(loss.item() - previous_loss) < 0.001:
-            break
-
+        x, y = fullproj(X_3D, full_proj,640, 480)
+        x_proj = torch.cat([x.unsqueeze(1), y.unsqueeze(1)], dim=1)
+        loss = ((x_proj - x_2d) ** 2).mean()
         loss.backward()
         optimizer.step()
-        previous_loss = loss.item()
-        """
-        if step % 100 == 0:
-            print(f"Step {step}, Loss: {loss.item()}")
-        """
-    # Final direction vector (normalized)
-    final_d = d / torch.norm(d)
-    # final midpoints
-    midpoits = proj_kp + 0.5 * seg_lengths.view(-1, 1) * final_d.view(1, 2)
-    
-    return midpoits
+    return X_3D[:, :3]
+
+
 
 def generate_mask_matrix(rows, cols, num_true, device='cuda'):
     # Step 1: Randomly sample indices of shape [rows, num_true]
@@ -166,7 +127,7 @@ def generate_mask_matrix(rows, cols, num_true, device='cuda'):
     return mask
 
 
-def knn(A, B, B_3D, F, k=64):
+def knn(A, B, B_3D, F, k=32):
     """
     For each point A[i], find the k nearest neighbors from B[j], and extract their corresponding coordinates and features.
     Here I use a random trick. That firstly get 2*k nearest neighbors and then randomly select k neigbors. This is proved to
@@ -347,31 +308,88 @@ def remove_invalid(mat):
 Main function 
 
 """
-def refiner(matched_2d, matched_3d, matched_3d_feature,  full_proj_matrix, feat_pcd, feat_feat, query_neigbor_pts, query_neigbor_feats):
+
+
+
+def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, query_neigbor_feats, mask):
+    
+   
+    
+     # Get the neigbor pixel of midpoints
+    _, proj_neigbor_feats, proj_neigbor_3d =  knn(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
+    
+
+    # Normalize the feature 
+    proj_neigbor_feats = F.normalize(proj_neigbor_feats, dim=2) 
+    
+
+    # Get the correlation matrix
+    fine_corr_matrix = torch.matmul(
+            proj_neigbor_feats, query_neigbor_feats[mask].transpose(-2, -1)
+        )
+    
+    fine_corr_matrix = dual_softmax(
+            fine_corr_matrix, temp=0.1
+        )
+
+
+    L_A2B, L_B2A, _ = mnn_match(
+            fine_corr_matrix
+        )
+    
+    
+    # Get the query image 2D pixel coords
+    q_pixel = get_query_coord_from_index(L_B2A, query_neigbor_pts[mask])  # [N, K, 2]
+    
+    # Get the proj mid neigbor pixel
+    proj_3d = get_query_coord_from_index(L_A2B, proj_neigbor_3d, dim=3) # [N,K,3]
+
+         
+    # return the 2D pixels and 3D points matching and the new midpoint 3D position
+    q_pixel = remove_invalid(q_pixel)
+    proj_3d = remove_invalid(proj_3d)
+    
+    
+    return  q_pixel, proj_3d
+
+def optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask, K):
+    
+    # Get the update 2D 3D pairs using its neighbor pixel
+    pnp_2d, pnp_3d = get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask)
+    
+    # Update the Pose
+    _, fine_R, fine_t, inl = cv2.solvePnPRansac(pnp_3d.cpu().numpy(), pnp_2d.cpu().numpy(), 
+                                                  K, 
+                                                  distCoeffs=None, 
+                                                  flags=cv2.SOLVEPNP_ITERATIVE, 
+                                                  iterationsCount=20000
+                                                  )
+                
+    
+    return fine_R, fine_t, inl
+    
+    
+
+
+def refiner(matched_2d, matched_3d, matched_3d_feature, view, feat_pcd, feat_feat, query_neigbor_pts, query_neigbor_feats,K):
     """
     Refine the coarse pose
     Input:
          matched_2d: numpy array [N,2] the matched query feature map keypoint(pixel) coordinates
          matched_3d: numpy array [N,3] the matched 3D SFM keypoint(3d) coordinates
          matched_3d_feature: tenosr [N, C] the matched 3D SFM keypoint(3d) feature
-         full_proj_matrix: the world-to-pixel projection matrix 
+         view: an Camera Object that contains the Pose informations 
          feat_pcd: tensor [M, 3]the SFM point cloud coordinates
          feat_feat: tensor [M, C] the SFM point cloud feature
          query_neigbor_pts: tensor [N, 64, 2] For each keypoint(pixel) in query feature map, gets its 8x8 neigbor pixels' coordinates 
          query_neigbor_feats : tensor [N, 64, C] For each keypoint(pixel) in query feature map, gets its 8x8 neigbor pixels' coordinates
     
-    return value:
-         q_pixel : [L,2]  all the neighbor pixels that has a match with 3D SFM point, which is then use to calculate PnP
-         proj_3d: [L,3]  all the 3D SFM point that match with q_pixel, which is then use to calculate PnP
-         temp_kp_3d : [Z, 3] the 3D coords of each midpoints
-         temp_kp_3d_feat : [Z, C] the feature of midpoints
-         matched_2d[mask]: updated (reject all the proj pixel that is outside of the space) matched query 2D keypoint (pixel) 
-         query_neigbor_pts[mask]: updated query keypoints neighbor pixles 
-         query_neigbor_feats[mask]: updated query keypoint neighbor pixels features
-         
-         updated_matched_3d : [N, 3]
     """
-    # Project the matched 3d into 2D pixel space and keep
+    
+    # Get the projection matrix
+    full_proj_matrix = view.full_proj_transform
+    
+    # Project the matched 3D into pixel space 
     # only the pixel that is inside the image
     matched_3d, matched_3d_feature = torch.tensor(matched_3d).cuda().float(), torch.tensor(matched_3d_feature).cuda().float()
     mask, matched_3d_proj, _ = project_and_filter(matched_3d, matched_3d_feature, full_proj_matrix, 640, 480)
@@ -382,61 +400,20 @@ def refiner(matched_2d, matched_3d, matched_3d_feature,  full_proj_matrix, feat_
     _, pixel_pc, pixel_feat =  project_and_filter(feat_pcd, feat_feat, full_proj_matrix, 640, 480)
     
     
-    # Get the midpoints
-    """
-    Two choices: 
-    1. Use the midpoints, which means that the refinement follows the updated position with each step  
-    """
-    midpoints = get_midpoints(torch.tensor(matched_2d[mask]), matched_3d_proj[:,:2])
+    # Refine the pose using neighbor feature 
+    updated_R, updated_t, inl = optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask, K)
     
-    """
-    2. Keep the refinement only in the neiborhood of project pixel without updating its position.
-       This is proved to be more accurate the choice 1
-    """
-    #midpoints = matched_3d_proj[:,:2]
+    # Update the Pose
+    updated_R, _ = cv2.Rodrigues(updated_R)  
+    view.update_RT(updated_R.T, updated_t[:,0])
+    # Get the updated projection matrix 
+    full_proj_matrix = view.full_proj_transform
     
-    
-    # Get the cloest pixel that match a 3D points in SFM
-    matches = get_cloest_3d_indice(midpoints, pixel_pc[:,:2])
-    temp_kp_3d = pixel_pc[:,2:][matches]
-    temp_kp_3d_feat = pixel_feat[matches]
-    
-    # Get the neigbor pixel of midpoints
-    _, mid_neigbor_feats, mid_neigbor_3d =  knn(midpoints, pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
-    
-
-    # Normalize the feature 
-    mid_neigbor_feats = F.normalize(mid_neigbor_feats, dim=2) 
-    
-
-    # Get the correlation matrix
-    fine_corr_matrix = torch.matmul(
-            mid_neigbor_feats, query_neigbor_feats[mask].transpose(-2, -1)
-        )
-    
-    fine_corr_matrix = dual_softmax(
-            fine_corr_matrix, temp=0.1
-        )
-
-
-    L_A2B, L_B2A, mask_mnn = mnn_match(
-            fine_corr_matrix
-        )
+    # Refine the 3D position
+    updated_3D = optimize_3D(matched_3d, matched_2d, full_proj_matrix)
     
     
-    # Get the query image 2D pixel coords
-    q_pixel = get_query_coord_from_index(L_B2A, query_neigbor_pts[mask])  # [N, K, 2]
-    
-    # Get the proj mid neigbor pixel
-    proj_3d = get_query_coord_from_index(L_A2B, mid_neigbor_3d, dim=3) # [N,K,3]
-
-         
-    # return the 2D pixels and 3D points matching and the new midpoint 3D position
-    q_pixel = remove_invalid(q_pixel)
-    proj_3d = remove_invalid(proj_3d)
-    
-    
-    return  q_pixel, proj_3d, temp_kp_3d, temp_kp_3d_feat, matched_2d[mask], query_neigbor_pts[mask], query_neigbor_feats[mask]
+    return view, updated_3D, updated_R, updated_t, inl
 
 
 

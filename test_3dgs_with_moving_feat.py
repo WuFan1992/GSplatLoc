@@ -247,30 +247,15 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 patch_feat = F.normalize(patch_feat, dim=2)
                 
                 
-                for i in range(10):
-                    view.update_RT(R.T, t[:,0])
-                    pnp_2d, pnp_3d, update_3d, update_3d_feat, update_2d, update_qpt, update_qfeat = refiner(matched_2d, matched_3d,  matched_3d_feature ,view.full_proj_transform, feat_pcd, feat_feat, patch_coord, patch_feat)
+                for i in range(30):
+                    view, updated_3d, fine_R, fine_t, inl = refiner(matched_2d, matched_3d,  matched_3d_feature ,view,  feat_pcd, feat_feat, patch_coord, patch_feat, K)
 
-                    _, fine_R, fine_t, inl = cv2.solvePnPRansac(pnp_3d.cpu().numpy(), pnp_2d.cpu().numpy(), 
-                                                  K, 
-                                                  distCoeffs=None, 
-                                                  flags=cv2.SOLVEPNP_ITERATIVE, 
-                                                  iterationsCount=args.ransac_iters
-                                                  )
-                
-                    fine_R, _ = cv2.Rodrigues(fine_R) 
                     rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
                     
                     print(f"Fine Rotation {i} Error: {rotError_fine} deg")
                     print(f"Fine Translation {i} Error: {transError_fine} cm")
                 
-                    
-                    matched_2d = update_2d
-                    matched_3d = update_3d
-                    matched_3d_feature = update_3d_feat
-                    patch_coord = update_qpt
-                    patch_feat = update_qfeat
-                    R, t = fine_R, fine_t
+                    matched_3d = updated_3d
 
                 
                 print(f"Fine Rotation Error: {rotError_fine} deg")
