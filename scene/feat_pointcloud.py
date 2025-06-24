@@ -14,7 +14,6 @@ class FeatPointCloud:
     
     def __init__(self):
         self._xyz = torch.empty(0).to("cuda")
-        self.xyz_gradient_accum = torch.empty(0)
         self._semantic_feature = torch.empty(0).to("cuda") 
     @property
     def get_xyz(self):

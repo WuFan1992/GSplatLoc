@@ -399,7 +399,7 @@ def optimize_3D(X_3D, x_2d, full_proj, steps=100):
     ones = torch.ones((N, 1), dtype=X_3D.dtype, device=X_3D.device)
     X_3D = torch.cat([X_3D, ones], dim=1)  # [N, 4]
     X_3D.requires_grad = True
-    optimizer = optim.Adam([X_3D], lr=1e-2)
+    optimizer = optim.NAdam([X_3D], lr=1e-2)
     for _ in range(steps):
         optimizer.zero_grad()
         x, y = fullproj(X_3D, full_proj,640, 480)

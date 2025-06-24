@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from utils.clip_utils import CLIPEditor
 import yaml
-from models.networks import CNN_decoder, MLP_encoder
+
 
 
 def feature_visualize_saving(feature):

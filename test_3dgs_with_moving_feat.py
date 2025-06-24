@@ -14,12 +14,12 @@ import cv2
 import numpy as np
 import time
 import torch
-from PIL import Image
+import torch.optim as optim
 
 from scene import Scene
 from tqdm import tqdm
 from gaussian_renderer import render
-from utils.general_utils import safe_state, image_process
+from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
@@ -39,25 +39,21 @@ from scene.feat_pointcloud import *
 from utils.refiner import refiner, extract_patch_features_with_coords
 
 """
-usage:
-     We have already construct a sfm with xfeat feature. This file is to test the 2D 3D matching with sfm.
-     We load image by image instead loading all images once which is different with the base code of 3DGS  
+This file is the complet version of 2d_3d_xfeat.py that launch direct 2D 3D macthing within all the test image 
+ command: 
+python test_3dgs_with_moving_feat.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
 
-command: 
-     python test_3dgs_with_moving_feat.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
-
-Preparation: 
-     we need to already train a 3DGS with xfeat feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
+we need to already train a 3DGS with xfeat feature in 15000 iteration and put it into the "output_wholescene/img_2000_head"
 Training image must be put in datasets/wholehead/
 
 """
 
-def getIntrinsic(view, width, height):
+def getIntrinsic(view):
     K = np.eye(3)
-    focal_length = fov2focal(view.FoVx, width)
+    focal_length = fov2focal(view.FoVx, view.image_width)
     K[0, 0] = K[1, 1] = focal_length
-    K[0, 2] = width / 2
-    K[1, 2] = height / 2
+    K[0, 2] = view.image_width / 2
+    K[1, 2] = view.image_height / 2
     return K
 
 def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_feat, chunk_size=10000):
@@ -182,30 +178,26 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
 
         xfeat = XFeat(top_k=4096)
         
+
         feat_pcd = torch.tensor(feat_pc.get_xyz).to("cuda")
         feat_feat = torch.tensor(feat_pc.get_semantic_feature.squeeze(-1)).to("cuda")
+        
+        start = time.time()
     
         for _, view in enumerate(tqdm(views, desc="Rendering progress")):
-            
-            try:
-                image = Image.open(view.image_path) 
-            except:
-                print(f"Error opening image: {view.image_path}")
-                continue
-
-            original_image = image_process(image)
-            gt_im = original_image.cuda()
+           
+             
+            gt_im = view.original_image[0:3, :, :]
             # Extract sparse features
             gt_keypoints, _, gt_feature = xfeat.detectAndCompute(gt_im[None], 
                                                                  top_k=4096)[0].values()
 
             # Define intrinsic matrix
-            K = getIntrinsic(view, original_image.shape[2], original_image.shape[1])
+            K = getIntrinsic(view)
 
-            start = time.time()
+     
 
             # Find initial pose prior via 2D-3D matching
-            #with torch.no_grad():
             if True:
                 matched_2d, matched_3d, matched_3d_feature = find_2d3d_correspondences(
                     gt_keypoints,
@@ -213,7 +205,6 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                     feat_pcd,
                     feat_feat
                 )
-                
                 
                 # get the coarse pose 
                 _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
@@ -232,10 +223,10 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                  # Calculate the rotation and translation errors using existing function
                 rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
                 ratio = len(inl)/len(matched_3d)
-
                 # Print the errors
                 print(f"Coarse Rotation Error: {rotError} deg")
                 print(f"Coarse Translation Error: {transError} cm")
+                
                 rotError_fine =0
                 transError_fine = 0
                 
@@ -246,20 +237,23 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                 patch_feat, patch_coord = extract_patch_features_with_coords(torch.tensor(matched_2d).cuda(), feature_map)
                 patch_feat = F.normalize(patch_feat, dim=2)
                 
+                view.update_RT(R.T, t[:,0])
                 
-                for i in range(30):
+                for i in range(25):
                     view, updated_3d, fine_R, fine_t, inl = refiner(matched_2d, matched_3d,  matched_3d_feature ,view,  feat_pcd, feat_feat, patch_coord, patch_feat, K)
 
                     rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
                     
-                    print(f"Fine Rotation {i} Error: {rotError_fine} deg")
-                    print(f"Fine Translation {i} Error: {transError_fine} cm")
+                    #print(f"Fine Rotation {i} Error: {rotError_fine} deg")
+                    #print(f"Fine Translation {i} Error: {transError_fine} cm")
                 
                     matched_3d = updated_3d
 
                 
                 print(f"Fine Rotation Error: {rotError_fine} deg")
                 print(f"Fine Translation Error: {transError_fine} cm")
+   
+
                 
                 
                 
@@ -270,6 +264,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
                     list_ratio.append(ratio)
                     refine_rErr.append(rotError_fine)
                     refine_tErr.append(transError_fine)
+                    print("mean coar trans - rot, mean fine trans - rot =  ", np.mean(prior_tErr), np.mean(prior_rErr), np.mean(refine_tErr) , np.mean(refine_rErr))
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
@@ -285,6 +280,7 @@ def localize_set(model_path, name, views, gaussians, pipeline, background, args,
         print(f"Mean inliers : {mean_inliers}  ")
         print(f"Mean ratio : {mean_ratio}  ")
 
+       
        
 
 def launch_inference(dataset : ModelParams, pipeline : PipelineParams, args): 

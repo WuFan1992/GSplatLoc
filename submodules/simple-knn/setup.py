@@ -27,10 +27,7 @@ setup(
             "spatial.cu", 
             "simple_knn.cu",
             "ext.cpp"],
-            extra_compile_args={"nvcc": [ "-I" +"C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.42.34433/include", 
-            "-I" +"C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/ucrt", 
-            "-I" +"C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um", 
-            "-I" +"C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/shared"], "cxx": cxx_compiler_flags})
+            extra_compile_args={"nvcc": [], "cxx": cxx_compiler_flags})
         ],
     cmdclass={
         'build_ext': BuildExtension

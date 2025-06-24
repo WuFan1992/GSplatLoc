@@ -42,13 +42,8 @@ class Scene:
         self.train_cameras = {}
         self.test_cameras = {}
 
-        if os.path.exists(os.path.join(args.source_path, "train")):
-            scene_info = sceneLoadTypeCallbacks["Split"](args.source_path) 
-        elif os.path.exists(os.path.join(args.source_path, "sparse")):
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.foundation_model, args.images, args.eval) 
-        elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
-            print("Found transforms_train.json file, assuming Blender data set!")
-            scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path,  args.foundation_model, args.white_background, args.eval) 
+        if os.path.exists(os.path.join(args.source_path, "sparse")):
+            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.eval) 
         else:
             assert False, "Could not recognize scene type!"
 
@@ -85,7 +80,7 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
             else:
-                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, FEATURE_DIM, args.speedup) 
+                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, FEATURE_DIM) 
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))

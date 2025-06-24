@@ -12,14 +12,15 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, tv_loss 
-from gaussian_renderer import render, network_gui
+from utils.loss_utils import l1_loss, ssim 
+from gaussian_renderer import render
+
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr, render_net_image
+
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 try:
@@ -29,15 +30,16 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 import torch.nn.functional as F
-from models.networks import CNN_decoder
-from models.semantic_dataloader import VariableSizeDataset
-from torch.utils.data import DataLoader
+
 
 #/////////////////////////
-import matplotlib.pyplot as plt
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 #////////////////////////
+
+from encoders.XFeat.modules.xfeat import XFeat
+from utils.pose_utils import getGTXYZ
+from scene.feat_pointcloud import FeatPointCloud
 
 """
 python train.py -s datasets/wholehead/ -m output_wholescene/img_2000_head --iteration 15000
@@ -48,32 +50,101 @@ Training image must be put in datasets/wholehead/
 If we train with disk, we need to point out in the dataset_reader.py where to find the pre-extract disk feature
 
 """
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+
+
+def sample_random_points(height=480, width=640, cell_size=8, device='cuda'):
+    """
+			Divide the feature map [480,640] into several cells, each cell contains 
+            8x8 tensors. Randomly select a tensor in each cell 
+
+			input:
+				height : 480
+                width : 640
+                cell size : 8
+                device: cuda or cpu
+			return:
+				coordinate [4800, 2]
+    """
+    cell_rows = height // cell_size  # 60
+    cell_cols = width // cell_size   # 80
+    total_cells = cell_rows * cell_cols  # 4800
+
+    # Get the the top left tensor coordinate
+    y_starts = torch.arange(0, height, cell_size, device=device).repeat_interleave(cell_cols)
+    x_starts = torch.arange(0, width, cell_size, device=device).repeat(cell_rows)
+
+    # In each cell, randomly offset from 0 to 7 
+    offset = torch.randint(0, cell_size, size=(total_cells, 2), device=device)
+
+    # Final coordinate = top left + offset 
+    coords = torch.stack([x_starts, y_starts], dim=1) + offset  # shape: (4800, 2)
+
+    return coords.int()  # keep the int type for coordinate
+
+
+
+def sample_features(feature: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
+    # feature shape: (C, H, W)
+    C, H, W = feature.shape
+    N = coords.shape[0]
+    
+
+    x = coords[:, 0].long()
+    y = coords[:, 1].long()
+    
+    x = x.clamp(0, W - 1)
+    y = y.clamp(0, H - 1)
+    
+    flat_indices = y * W + x  # shape: (N,)
+    feature_flat = feature.view(C, -1)  # shape: (64, 480*640)
+    sampled = feature_flat[:, flat_indices]  # shape: (64, N)
+    
+    # Transpose(N, 64)
+    return sampled.t()
+
+def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_feat, chunk_size=10000):
+    device = image_features.device
+    f_N, feat_dim = image_features.shape
+    P_N = gaussian_feat.shape[0]
+    
+    # Normalize features for faster cosine similarity computation
+    image_features = F.normalize(image_features, p=2, dim=1)
+    gaussian_feat = F.normalize(gaussian_feat, p=2, dim=1)
+    
+    max_similarity = torch.full((f_N,), -float('inf'), device=device)
+    max_indices = torch.zeros(f_N, dtype=torch.long, device=device)
+    
+    for part in range(0, P_N, chunk_size):
+        chunk = gaussian_feat[part:part + chunk_size]
+        # Use matrix multiplication for faster similarity computation
+        similarity = torch.mm(image_features, chunk.t())
+        
+        chunk_max, chunk_indices = similarity.max(dim=1)
+        update_mask = chunk_max > max_similarity
+        max_similarity[update_mask] = chunk_max[update_mask]
+        max_indices[update_mask] = chunk_indices[update_mask] + part
+
+    point_vis = gaussian_pcd[max_indices].cpu().numpy().astype(np.float64)
+    point_vis_feature = gaussian_feat[max_indices].cpu().numpy()
+    keypoints_matched = keypoints[..., :2].cpu().numpy().astype(np.float64)
+    
+    return keypoints_matched, point_vis, point_vis_feature
+
+
+
+def training(dataset, opt, pipe,  saving_iterations, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
+    featpc = FeatPointCloud()
+    featpc.init_feat_pc(dataset.source_path, 64)
+    xfeat = XFeat(top_k=4096)
     
-    # 2D semantic feature map CNN decoder
-    viewpoint_stack = scene.getTrainCameras().copy()
-    viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-    gt_feature_map = viewpoint_cam.semantic_feature.cuda()
-    feature_out_dim = gt_feature_map.shape[0]
-
-    
-    # speed up
-    if dataset.speedup:
-        feature_in_dim = int(feature_out_dim/4)
-        cnn_decoder = CNN_decoder(feature_in_dim, feature_out_dim)
-        cnn_decoder_optimizer = torch.optim.Adam(cnn_decoder.parameters(), lr=0.0001)
-
-
     gaussians.training_setup(opt)
-    if checkpoint:
-        (model_params, first_iter) = torch.load(checkpoint)
-        gaussians.restore(model_params, opt)
 
-    bg_color = [1]*128 if dataset.white_background else [0]*128
+
+    bg_color = [1]*64 if dataset.white_background else [0]*64
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     iter_start = torch.cuda.Event(enable_timing = True)
@@ -83,7 +154,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
-
+    
 
     for iteration in range(first_iter, opt.iterations + 1):
 
@@ -105,50 +176,37 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             pipe.debug = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         
-
-        feature_map, image, viewspace_point_tensor, visibility_filter, radii = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        #----- feature_map size [C,H,W] = [64,480,640]----#
+        image, viewspace_point_tensor, visibility_filter, radii =  render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
 
-        feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
-        if dataset.speedup:
-            feature_map = cnn_decoder(feature_map)
-        Ll1_feature = l1_loss(feature_map, gt_feature_map) 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + 1.0 * Ll1_feature 
-        
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
         iter_end.record()
         
-        #///////////////////////////////////////////
         """
-        if not iteration % 50:
-            with torch.no_grad():
-                viewpoint_stack_0 = scene.getTrainCameras().copy()
-                viewpoint_cam_0 = viewpoint_stack_0[235]
-                print("image name = ", viewpoint_cam_0.image_name)
-                gt_feature_map_0 = viewpoint_cam_0.semantic_feature 
-                render_pkg_0 = render(viewpoint_cam_0, gaussians, pipe, background)
-                feature_map_0 = render_pkg_0["feature_map"]
-            #feature_map_0 = F.interpolate(feature_map_0.unsqueeze(0), size=(gt_feature_map_0.shape[1], gt_feature_map_0.shape[2]), mode='bilinear', align_corners=True).squeeze(0)
-                gt_feature_map_0 = F.interpolate(gt_feature_map_0.unsqueeze(0), size=(feature_map_0.shape[1], feature_map_0.shape[2]), mode='bilinear', align_corners=True).squeeze(0)
-                layer_loss = l1_loss(feature_map_0, gt_feature_map_0) 
-                if tb_writer:
-                    tb_writer.add_scalar('train_loss_patches/residual_error', layer_loss.item(), iteration)
-                residual_feature = torch.abs(gt_feature_map_0 - feature_map_0).to("cpu").mean(0).detach().numpy()
-                plt.imsave(scene.model_path + f"each_channel_feature_map/residual/{iteration}_{layer_loss}.png",residual_feature , cmap='gray')
-                del viewpoint_stack_0
-                del viewpoint_cam_0
-                del gt_feature_map_0
-                del render_pkg_0
-                del feature_map_0
-                del residual_feature
-
-        """
-        #//////////////////////////////////////////
+        Move the matching gaussian to its Gt position
+        Here we divide the width and height by 8
         
+        """ 
+        
+        gt_feature_map = xfeat.get_descriptors(gt_image[None])[0]
+        
+        # Generate the sampling coordinates in [480, 640]
+        render_coord =  sample_random_points(image.shape[1],image.shape[2], cell_size=8, device="cuda")
+        
+        # Sample the feature according to the coordinates
+        gt_map = F.interpolate(gt_feature_map.unsqueeze(0), size=(image.shape[1], image.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
+        gt_feat = sample_features(gt_map, render_coord)
 
+        # Get the depth map and For each pixel in query image, find its coordinate in 3DGS      
+        depth_map = render_pkg["depth"] 
+        render_keypoints_3d = getGTXYZ(viewpoint_cam.projection_matrix, viewpoint_cam.world_view_transform, render_coord, depth_map)
+
+        featpc.update_ply(render_keypoints_3d, gt_feat)
+        
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
@@ -159,14 +217,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             # Log and save
-            training_report(tb_writer, iteration, Ll1, Ll1_feature, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background)) 
+            training_report(tb_writer, iteration, Ll1, iter_start.elapsed_time(iter_end)) 
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-                print("\n[ITER {}] Saving feature decoder ckpt".format(iteration))
-                if dataset.speedup:
-                    torch.save(cnn_decoder.state_dict(), scene.model_path + "/decoder_chkpnt" + str(iteration) + ".pth")
-  
+                #save feature point cloud 
+                point_cloud_path = os.path.join(scene.model_path, "feature_point_cloud_chess/iteration_{}".format(iteration))
+                featpc.save_ply(os.path.join(point_cloud_path, "feature_point_cloud.ply"))
+
+                
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -186,37 +245,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
-                if dataset.speedup:
-                    cnn_decoder_optimizer.step()
-                    cnn_decoder_optimizer.zero_grad(set_to_none = True)
+                
 
-            if (iteration in checkpoint_iterations):
-                print("\n[ITER {}] Saving Checkpoint".format(iteration))
-                torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
-
-        with torch.no_grad():        
-            if network_gui.conn == None:
-                network_gui.try_connect(dataset.render_items)
-            while network_gui.conn != None:
-                try:
-                    net_image_bytes = None
-                    custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
-                    if custom_cam != None:
-                        render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer)   
-                        net_image = render_net_image(render_pkg, dataset.render_items, render_mode, custom_cam)
-                        net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
-                    metrics_dict = {
-                        "#": gaussians.get_opacity.shape[0],
-                        "loss": ema_loss_for_log
-                        # Add more metrics as needed
-                    }
-                    # Send the data
-                    network_gui.send(net_image_bytes, dataset.source_path, metrics_dict)
-                    if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
-                        break
-                except Exception as e:
-                    # raise e
-                    network_gui.conn = None
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -240,43 +270,12 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, Ll1, Ll1_feature, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+def training_report(tb_writer, iteration, Ll1, elapsed):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
-        tb_writer.add_scalar('train_loss_patches/l1_loss_feature', Ll1_feature.item(), iteration) 
-        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
 
-    # Report test and samples of training set
-    if iteration in testing_iterations:
-        torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
 
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
-                for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
-
-        if tb_writer:
-            tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
-            tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
-        torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -284,30 +283,21 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
+   
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default = None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
-    
-    print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    # Start GUI server, configure and run training
-    ###### Fan WU #######
+    # Objectif of training :Test 
     args.eval = True
-    #####################
-    network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.save_iterations, args.debug_from)
 
     # All done
     print("\nTraining complete.")

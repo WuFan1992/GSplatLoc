@@ -46,28 +46,23 @@ namespace FORWARD
 		const dim3 grid,
 		uint32_t* tiles_touched,
 		bool prefiltered,
-		float* points_in_render_images);
+		bool antialiasing);
 
 	// Main rasterization method.
 	void render(
-		const float* orig_points,
 		const dim3 grid, dim3 block,
 		const uint2* ranges,
 		const uint32_t* point_list,
 		int W, int H,
 		const float2* points_xy_image,
 		const float* features,
-		const float* semantic_feature,
-		const float* depths,
 		const float4* conic_opacity,
 		float* final_T,
 		uint32_t* n_contrib,
 		const float* bg_color,
 		float* out_color,
-		float* out_feature_map,
-		float* out_depth, 
-	    float* xy_to_3D_ranges,
-	    int P);
+		float* depths,
+		float* depth);
 }
 
 

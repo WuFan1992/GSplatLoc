@@ -48,15 +48,10 @@ class ModelParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
         self._source_path = ""
-        self._foundation_model = "" ###
         self._model_path = ""
-        self._images = "images"
-        self._resolution = -1
         self._white_background = False
         self.data_device = "cuda"
         self.eval = False
-        self.speedup = False ###
-        self.render_items = ['RGB', 'Depth', 'Edge', 'Normal', 'Curvature', 'Feature Map']
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -84,9 +79,6 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
-#################################################
-        self.semantic_feature_lr = 0.001 
-#################################################
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.densification_interval = 100

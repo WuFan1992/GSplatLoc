@@ -15,7 +15,6 @@
 #include <vector>
 #include <functional>
 
-
 namespace CudaRasterizer
 {
 	class Rasterizer
@@ -39,7 +38,6 @@ namespace CudaRasterizer
 			const float* means3D,
 			const float* shs,
 			const float* colors_precomp,
-			const float* semantic_feature,
 			const float* opacities,
 			const float* scales,
 			const float scale_modifier,
@@ -51,13 +49,10 @@ namespace CudaRasterizer
 			const float tan_fovx, float tan_fovy,
 			const bool prefiltered,
 			float* out_color,
-			float* out_feature_map,
-			float* out_depth,
-			float* points_in_render_images,
-			float* xy_to_3D_ranges,
+			float* depth,
+			bool antialiasing,
 			int* radii = nullptr,
-			bool debug = false
-			);
+			bool debug = false);
 
 		static void backward(
 			const int P, int D, int M, int R,
@@ -66,7 +61,7 @@ namespace CudaRasterizer
 			const float* means3D,
 			const float* shs,
 			const float* colors_precomp,
-			const float* semantic_feature, 
+			const float* opacities,
 			const float* scales,
 			const float scale_modifier,
 			const float* rotations,
@@ -80,19 +75,18 @@ namespace CudaRasterizer
 			char* binning_buffer,
 			char* image_buffer,
 			const float* dL_dpix,
-			const float* dL_dfeaturepix,
-			const float* dL_depths,
+			const float* dL_invdepths,
 			float* dL_dmean2D,
 			float* dL_dconic,
 			float* dL_dopacity,
 			float* dL_dcolor,
-			float* dL_dsemantic_feature, 
+			float* dL_dinvdepth,
 			float* dL_dmean3D,
 			float* dL_dcov3D,
 			float* dL_dsh,
 			float* dL_dscale,
 			float* dL_drot,
-			float* dL_dz,
+			bool antialiasing,
 			bool debug);
 	};
 };
