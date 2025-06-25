@@ -16,23 +16,12 @@ viz
 output/
 
 # Dataset files.
-datasets/7scenes_*
-datasets/12scenes_*
-datasets/Cambridge_*
-datasets/pgt_*
-datasets/visloc_pseudo_gt_limitations
-datasets/_*
-datasets/images/
-datasets/
-datasets/sparse/
-7scenes_source/
-7scenes_sources/
-pgt_7scenes_chess/
-visloc_pseudo_gt_limitations/
+datasets/*
 
 #Build Files
 submodules/diff-gaussian-rasterization/build/
 submodules/simple-knn/build/
+submodules/diff-gaussian-rasterization/third_party
 
 output_wholescene/*
 *.pt

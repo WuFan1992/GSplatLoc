@@ -29,9 +29,7 @@ class Camera(nn.Module):
         self.FoVy = FoVy
         self.image_name = image_name
         self.image_path = image_path
-        ################## Fan WU #### 
         self.seq_num = seq_num
-        ##############################
         try:
             self.data_device = torch.device(data_device)
         except Exception as e:

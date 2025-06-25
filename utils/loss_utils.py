@@ -12,13 +12,12 @@
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
+import numpy as np
 from math import exp
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
 
-def l2_loss(network_output, gt):
-    return ((network_output - gt) ** 2).mean()
 
 def gaussian(window_size, sigma):
     gauss = torch.Tensor([exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
@@ -62,32 +61,3 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     else:
         return ssim_map.mean(1).mean(1).mean(1)
 
-###
-def tv_loss(feature_map):
-    """
-    Input:
-    - feature_map: (C, H, W)
-    Return:
-    - total variation loss
-    """
-    tv_loss = ((feature_map[:, :, :-1] - feature_map[:, :, 1:])**2).sum() + ((feature_map[:, :-1, :] - feature_map[:, 1:, :])**2).sum()
-
-    return tv_loss
-
-
-def calculate_accuracy(y_true, y_pred):
-    correct_predictions = np.sum(y_true == y_pred)
-    total_pixels = np.prod(y_true.shape)
-    return correct_predictions / total_pixels
-    
-    
-def calculate_iou(y_true, y_pred, num_classes):
-    iou = []
-    for i in range(num_classes):
-        true_labels = y_true == i
-        predicted_labels = y_pred == i
-        intersection = np.logical_and(true_labels, predicted_labels)
-        union = np.logical_or(true_labels, predicted_labels)
-        iou_score = np.sum(intersection) / np.sum(union)
-        iou.append(iou_score)
-    return np.nanmean(iou)  

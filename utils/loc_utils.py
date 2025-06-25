@@ -64,22 +64,6 @@ def log_errors(model_path, name, rotation_errors, translation_errors, inplace_te
         f.write(f'Median rotation error: {median_rErr:.6f} dg\n')
 
 
-def log_errors_iters(model_path, name, rotation_errors, translation_errors, inplace_text):
-    
-    # Remove NaN values from rotation_errors and translation_errors
-    rotation_errors = {iter_num: [err for err in errors if not np.isnan(err)] for iter_num, errors in rotation_errors.items()}
-    translation_errors = {iter_num: [err for err in errors if not np.isnan(err)] for iter_num, errors in translation_errors.items()}
-
-    log_dir = os.path.join(model_path, 'error_logs')
-    os.makedirs(log_dir, exist_ok=True)
-
-    with open(os.path.join(log_dir, f'median_error_{name}_{inplace_text}_iters_end.txt'), 'w') as f:
-        for iter_num in sorted(rotation_errors.keys()):
-            median_rErr = np.median(rotation_errors[iter_num])
-            median_tErr = np.median(translation_errors[iter_num])
-            f.write(f'{iter_num} iter | t_err: {median_tErr:.6f} cm, r_err: {median_rErr:.6f} deg\n')
-
-
 
 def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_feat, chunk_size=10000):
     device = image_features.device

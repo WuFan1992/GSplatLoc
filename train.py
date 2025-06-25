@@ -10,35 +10,31 @@
 #
 
 import os
-import torch
-from random import randint
-from utils.loss_utils import l1_loss, ssim 
-from gaussian_renderer import render
-
 import sys
-from scene import Scene, GaussianModel
-from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
+import torch
+import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+from random import randint
+ 
+from PIL import Image
 
-from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams, OptimizationParams
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
 
-import torch.nn.functional as F
-
-
-#/////////////////////////
-import numpy as np
-from torch.utils.tensorboard import SummaryWriter
-#////////////////////////
-
+from scene import Scene, GaussianModel
+from argparse import ArgumentParser, Namespace
+from arguments import ModelParams, PipelineParams, OptimizationParams
 from encoders.XFeat.modules.xfeat import XFeat
 from utils.pose_utils import getGTXYZ
+from utils.general_utils import safe_state, image_process
+from utils.loss_utils import l1_loss, ssim
+from utils.sampling_utils import sample_random_points, sample_features
+from gaussian_renderer import render
 from scene.feat_pointcloud import FeatPointCloud
 
 """
@@ -50,85 +46,6 @@ Training image must be put in datasets/wholehead/
 If we train with disk, we need to point out in the dataset_reader.py where to find the pre-extract disk feature
 
 """
-
-
-def sample_random_points(height=480, width=640, cell_size=8, device='cuda'):
-    """
-			Divide the feature map [480,640] into several cells, each cell contains 
-            8x8 tensors. Randomly select a tensor in each cell 
-
-			input:
-				height : 480
-                width : 640
-                cell size : 8
-                device: cuda or cpu
-			return:
-				coordinate [4800, 2]
-    """
-    cell_rows = height // cell_size  # 60
-    cell_cols = width // cell_size   # 80
-    total_cells = cell_rows * cell_cols  # 4800
-
-    # Get the the top left tensor coordinate
-    y_starts = torch.arange(0, height, cell_size, device=device).repeat_interleave(cell_cols)
-    x_starts = torch.arange(0, width, cell_size, device=device).repeat(cell_rows)
-
-    # In each cell, randomly offset from 0 to 7 
-    offset = torch.randint(0, cell_size, size=(total_cells, 2), device=device)
-
-    # Final coordinate = top left + offset 
-    coords = torch.stack([x_starts, y_starts], dim=1) + offset  # shape: (4800, 2)
-
-    return coords.int()  # keep the int type for coordinate
-
-
-
-def sample_features(feature: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
-    # feature shape: (C, H, W)
-    C, H, W = feature.shape
-    N = coords.shape[0]
-    
-
-    x = coords[:, 0].long()
-    y = coords[:, 1].long()
-    
-    x = x.clamp(0, W - 1)
-    y = y.clamp(0, H - 1)
-    
-    flat_indices = y * W + x  # shape: (N,)
-    feature_flat = feature.view(C, -1)  # shape: (64, 480*640)
-    sampled = feature_flat[:, flat_indices]  # shape: (64, N)
-    
-    # Transpose(N, 64)
-    return sampled.t()
-
-def find_2d3d_correspondences(keypoints, image_features, gaussian_pcd, gaussian_feat, chunk_size=10000):
-    device = image_features.device
-    f_N, feat_dim = image_features.shape
-    P_N = gaussian_feat.shape[0]
-    
-    # Normalize features for faster cosine similarity computation
-    image_features = F.normalize(image_features, p=2, dim=1)
-    gaussian_feat = F.normalize(gaussian_feat, p=2, dim=1)
-    
-    max_similarity = torch.full((f_N,), -float('inf'), device=device)
-    max_indices = torch.zeros(f_N, dtype=torch.long, device=device)
-    
-    for part in range(0, P_N, chunk_size):
-        chunk = gaussian_feat[part:part + chunk_size]
-        # Use matrix multiplication for faster similarity computation
-        similarity = torch.mm(image_features, chunk.t())
-        
-        chunk_max, chunk_indices = similarity.max(dim=1)
-        update_mask = chunk_max > max_similarity
-        max_similarity[update_mask] = chunk_max[update_mask]
-        max_indices[update_mask] = chunk_indices[update_mask] + part
-
-    point_vis = gaussian_pcd[max_indices].cpu().numpy().astype(np.float64)
-    point_vis_feature = gaussian_feat[max_indices].cpu().numpy()
-    keypoints_matched = keypoints[..., :2].cpu().numpy().astype(np.float64)
-    
-    return keypoints_matched, point_vis, point_vis_feature
 
 
 
@@ -158,6 +75,9 @@ def training(dataset, opt, pipe,  saving_iterations, debug_from):
 
     for iteration in range(first_iter, opt.iterations + 1):
 
+        """
+        3DGS training 
+        """
         iter_start.record()
 
         gaussians.update_learning_rate(iteration)
@@ -170,36 +90,48 @@ def training(dataset, opt, pipe,  saving_iterations, debug_from):
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        
+        # Get training image 
+        try:
+            image = Image.open(viewpoint_cam.image_path) 
+        except:
+            print(f"Error opening image: {viewpoint_cam.image_path}")
+            continue
+
+        original_image = image_process(image)
+        gt_im = original_image.cuda()
+        
+        img_width = gt_im.shape[2]
+        img_height = gt_im.shape[1]
 
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, img_width, img_height)
         
-        #----- feature_map size [C,H,W] = [64,480,640]----#
+        
         image, viewspace_point_tensor, visibility_filter, radii =  render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        Ll1 = l1_loss(image, gt_image)
+        
+        Ll1 = l1_loss(image, gt_im)
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_im))
         loss.backward()
         iter_end.record()
         
         """
-        Move the matching gaussian to its Gt position
-        Here we divide the width and height by 8
+        SFM Feature learning
         
         """ 
-        
-        gt_feature_map = xfeat.get_descriptors(gt_image[None])[0]
+        #----- feature_map size [C,H,W] = [64,480,640]----#
+        gt_feature_map = xfeat.get_descriptors(gt_im[None])[0]
         
         # Generate the sampling coordinates in [480, 640]
-        render_coord =  sample_random_points(image.shape[1],image.shape[2], cell_size=8, device="cuda")
+        render_coord =  sample_random_points(img_height,img_width, cell_size=8, device="cuda")
         
         # Sample the feature according to the coordinates
-        gt_map = F.interpolate(gt_feature_map.unsqueeze(0), size=(image.shape[1], image.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
-        gt_feat = sample_features(gt_map, render_coord)
+        gt_map = F.interpolate(gt_feature_map.unsqueeze(0), size=(img_height, img_width), mode='bilinear', align_corners=True).squeeze(0) #640x480
+        gt_feat = sample_features(gt_map, render_coord) # get the feature from the ground truth 
 
         # Get the depth map and For each pixel in query image, find its coordinate in 3DGS      
         depth_map = render_pkg["depth"] 
