@@ -179,6 +179,28 @@ def knn(A, B, B_3D, F, k=32):
     return B_coords_selected, B_feats_selected, B_3D_selected
 
 
+"""
+Alblation Version
+"""
+def knn_norand(A, B, B_3D, F, k=32):
+    
+    device = A.device
+    N, M = A.shape[0], B.shape[0]
+    
+
+    dists = torch.cdist(A, B, p=2)  # Euclidean distance [N, M]
+    
+    # Find the indices of the k smallest distances
+    knn_dists, knn_indices = torch.topk(dists, k=k, dim=1, largest=False)
+
+
+    # Retrieve the corresponding coordinates (2D and 3D) and features from B 
+    B_coords_selected = B[knn_indices]    # [N, k, 2]
+    B_feats_selected = F[knn_indices]     # [N, k, 64]
+    B_3D_selected = B_3D[knn_indices]
+    
+    return B_coords_selected, B_feats_selected, B_3D_selected
+
 
 
 def mnn_match(corr_matrix):
@@ -336,8 +358,13 @@ def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, 
     
     """    
      # Get the neigbor pixel of projected 3D matched points
-    _, proj_neigbor_feats, proj_neigbor_3d =  knn(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
-    
+    """
+     Two version :
+       Version 1 : choose 64 closet point and randomly select 32 cloest point
+       Version 2 : Directly choose 32 cloest point
+    """
+    #_, proj_neigbor_feats, proj_neigbor_3d =  knn(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
+    _, proj_neigbor_feats, proj_neigbor_3d =  knn_norand(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
 
     # Normalize the feature 
     proj_neigbor_feats = F.normalize(proj_neigbor_feats, dim=2) 
@@ -449,9 +476,14 @@ def refiner(matched_2d, matched_3d, matched_3d_feature, view, feat_pcd, feat_fea
     # Get the updated projection matrix 
     full_proj_matrix = view.full_proj_transform
     
+    """
+     Two version :
+       Version 1 : Optimize 3D position
+       Version 2 : No Optimize 3D position
+    """
     # Refine the 3D position
-    updated_3D = optimize_3D(matched_3d, matched_2d, full_proj_matrix)
-    
+    #updated_3D = optimize_3D(matched_3d, matched_2d, full_proj_matrix)
+    updated_3D = matched_3d
     
     return view, updated_3D, updated_R, updated_t, inl
 

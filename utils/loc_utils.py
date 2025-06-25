@@ -41,7 +41,7 @@ def log_errors(model_path, name, rotation_errors, translation_errors, inplace_te
     pct2 = sum(r <= 2 and t <= 2 for r, t in zip(rotation_errors, translation_errors)) / total_frames * 100
     pct1 = sum(r <= 1 and t <= 1 for r, t in zip(rotation_errors, translation_errors)) / total_frames * 100
 
-    print('Accuracy:')
+    print('Accuracy:', inplace_text)
     print(f'\t10cm/5deg: {pct10_5:.1f}%')
     print(f'\t5cm/5deg: {pct5:.1f}%')
     print(f'\t2cm/2deg: {pct2:.1f}%')
