@@ -109,13 +109,15 @@ def training(dataset, opt, pipe,  saving_iterations, debug_from):
             pipe.debug = True
         render_pkg = render(viewpoint_cam, gaussians, pipe, background, img_width, img_height)
         
-        
-        image, viewspace_point_tensor, visibility_filter, radii =  render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        #gt_feature_map = viewpoint_cam.semantic_feature.cuda() #64x48
+        gt_feature_map = xfeat.get_descriptors(gt_im[None])[0]
+        render_feature_map , image, viewspace_point_tensor, visibility_filter, radii = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         # Loss
-        
         Ll1 = l1_loss(image, gt_im)
+        feature_map = F.interpolate(render_feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) #640x480
+        Ll1_feature = l1_loss(feature_map, gt_feature_map) 
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_im)) + 1.0 * Ll1_feature 
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_im))
         loss.backward()
         iter_end.record()
         
@@ -123,21 +125,19 @@ def training(dataset, opt, pipe,  saving_iterations, debug_from):
         SFM Feature learning
         
         """ 
-        #----- feature_map size [C,H,W] = [64,480,640]----#
-        gt_feature_map = xfeat.get_descriptors(gt_im[None])[0]
         
         # Generate the sampling coordinates in [480, 640]
-        render_coord =  sample_random_points(img_height,img_width, cell_size=8, device="cuda")
+        render_coord =  sample_random_points(render_feature_map.shape[1],render_feature_map.shape[2], cell_size=8, device="cuda")
         
         # Sample the feature according to the coordinates
-        gt_map = F.interpolate(gt_feature_map.unsqueeze(0), size=(img_height, img_width), mode='bilinear', align_corners=True).squeeze(0) #640x480
-        gt_feat = sample_features(gt_map, render_coord) # get the feature from the ground truth 
+        render_map = render_feature_map.clone().detach()
+        render_feat = sample_features(render_map, render_coord)
 
         # Get the depth map and For each pixel in query image, find its coordinate in 3DGS      
         depth_map = render_pkg["depth"] 
         render_keypoints_3d = getGTXYZ(viewpoint_cam.projection_matrix, viewpoint_cam.world_view_transform, render_coord, depth_map)
 
-        featpc.update_ply(render_keypoints_3d, gt_feat)
+        featpc.update_ply(render_keypoints_3d, render_feat)
         
         with torch.no_grad():
             # Progress bar
@@ -167,7 +167,7 @@ def training(dataset, opt, pipe,  saving_iterations, debug_from):
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
