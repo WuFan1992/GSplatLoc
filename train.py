@@ -154,7 +154,7 @@ def training(dataset, opt, pipe,  saving_iterations, debug_from):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
                 #save feature point cloud 
-                point_cloud_path = os.path.join(scene.model_path, "feature_point_cloud_chess/iteration_{}".format(iteration))
+                point_cloud_path = os.path.join(scene.model_path, "feature_point_cloud/iteration_{}".format(iteration))
                 featpc.save_ply(os.path.join(point_cloud_path, "feature_point_cloud.ply"))
 
                 

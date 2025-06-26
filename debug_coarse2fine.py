@@ -50,12 +50,6 @@ Training image must be put in datasets/wholehead/
 
 def localize_set(dataset, views, gaussians, pipeline, args, feat_pc):
 
-        prior_rErr = []
-        prior_tErr = []
-        refine_rErr = []
-        refine_tErr = []
-        inliers = []
-        list_ratio = []
 
         xfeat = XFeat(top_k=4096)
         
@@ -127,10 +121,10 @@ def localize_set(dataset, views, gaussians, pipeline, args, feat_pc):
             render_pkg = render(view, gaussians, pipeline, background, img_width, img_height)
             depth_map = render_pkg["depth"] 
             gt_kps_3d = getGTXYZ(view.projection_matrix, view.world_view_transform, torch.tensor(matched_2d[rand_kp_indices]).cuda(), depth_map)
+            coarse_kp_3d = matched_3d[rand_kp_indices]
 
-            print("gt_kps_3d = ", gt_kps_3d)
             # get the coarse pose 
-            _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
+            _, R, t, _ = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
@@ -140,18 +134,7 @@ def localize_set(dataset, views, gaussians, pipeline, args, feat_pc):
             
             R, _ = cv2.Rodrigues(R) 
                 
-            gt_R = view.R
-            gt_t = view.T   
-                
-            # Calculate the rotation and translation errors using existing function
-            rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
-            coarse_ratio = len(inl)/len(matched_3d)
-            # Print the errors
-            print(f"Coarse Rotation Error: {rotError} deg")
-            print(f"Coarse Translation Error: {transError} cm")
-                
-            rotError_fine =0
-            transError_fine = 0
+
                 
             # Extract 8x8 patch feature
             gt_feature_map = xfeat.get_descriptors(gt_im[None])[0]
@@ -165,44 +148,27 @@ def localize_set(dataset, views, gaussians, pipeline, args, feat_pc):
                 
             for i in range(25):
                 view, updated_3d, fine_R, fine_t, inl = refiner(matched_2d, matched_3d,  matched_3d_feature ,view,  feat_pcd, feat_feat, patch_coord, patch_feat, K)
-
-                rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
-                    
-                #print(f"Fine Rotation {i} Error: {rotError_fine} deg")
-                #print(f"Fine Translation {i} Error: {transError_fine} cm")
                 
                 matched_3d = updated_3d
+            
+            fine_kp_3d = matched_3d[rand_kp_indices]
+            
+            open3d_model.create_window()
 
-                
-            print(f"Fine Rotation Error: {rotError_fine} deg")
-            print(f"Fine Translation Error: {transError_fine} cm")
+    
+            open3d_model.add_keypoint(gt_kps_3d.cpu().numpy(),gt_color )
+            open3d_model.add_keypoint(coarse_kp_3d, coarse_color)
+            open3d_model.add_keypoint(fine_kp_3d.cpu().detach().numpy(), fine_color)
+            open3d_model.add_points()
+            open3d_model.show()
+            
+            
+            
+            
                
                 
-            if inl is not None:
-                inliers.append(len(inl))
-                prior_rErr.append(rotError)
-                prior_tErr.append(transError)
-                list_ratio.append(coarse_ratio)
-                refine_rErr.append(rotError_fine)
-                refine_tErr.append(transError_fine)
-                print("mean coar trans - rot, mean fine trans - rot =  ", np.mean(prior_tErr), np.mean(prior_rErr), np.mean(refine_tErr) , np.mean(refine_rErr))
-            
-        err_mean_rot =  np.mean(prior_rErr)
-        err_mean_trans = np.mean(prior_tErr)
-        mean_inliers = np.mean(inliers)
-        mean_ratio = np.mean(list_ratio) 
-        err_mean_refine_rot = np.mean(refine_rErr)
-        err_mean_refine_trans = np.mean(refine_tErr) 
 
-        print(f"Rotation Average Error: {err_mean_rot} deg ")
-        print(f"Translation Average Error: {err_mean_trans} cm ")
-        print(f"Rotation Fine Average Error: {err_mean_refine_rot} deg ")
-        print(f"Translation Fine Average Error: {err_mean_refine_trans} cm ")  
-        print(f"Mean inliers : {mean_inliers}  ")
-        print(f"Mean ratio : {mean_ratio}  ")
-        log_errors(dataset.model_path, "test", prior_rErr, prior_tErr, "coarse")
-        log_errors(dataset.model_path, "test", refine_rErr, refine_tErr, f"refine")
-
+        
        
        
 
@@ -214,7 +180,7 @@ def launch_inference(dataset : ModelParams, opt: OptimizationParams,  pipeline: 
                                                       "iteration_"+ str(args.iteration),
                                                       "feature_point_cloud.ply"))  
     gaussians = GaussianModel(dataset.sh_degree)
-    scene = Scene(dataset, gaussians, shuffle=False)
+    scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False)
     gaussians.training_setup(opt)
     
     localize_set(dataset, scene.getTestCameras(), gaussians, pipeline,  args, feat_pc)

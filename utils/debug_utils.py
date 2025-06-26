@@ -178,15 +178,12 @@ class Open3DModel:
         self.__vis.poll_events()
         self.__vis.update_renderer()
         
-    def add_keypoints(self, keypoints):
-        for kp in keypoints:
-            self.xyz.append(np.array(kp))
-            self.rgb.append(np.array((255,0,0))/255)
+
         
     def add_keypoint(self, keypoints, rgb):
-        for kp in keypoints:
+        for i,kp in enumerate(keypoints):
             self.xyz.append(np.array(kp))
-            self.rgb.append(np.array((rgb))/255)
+            self.rgb.append(np.array((rgb[i]))/255)
         
         
     def create_window(self):
