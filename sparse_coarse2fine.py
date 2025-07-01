@@ -122,11 +122,12 @@ def localize_set(model_path, views, args, feat_pc):
                 
             patch_feat, patch_coord = extract_patch_features_with_coords(torch.tensor(matched_2d).cuda(), feature_map)
             patch_feat = F.normalize(patch_feat, dim=2)
-
+            
+   
             view.update_RT(R.T, t[:,0])
                 
             for i in range(25):
-                view, updated_3d, fine_R, fine_t, inl = refiner(matched_2d, matched_3d,  matched_3d_feature ,view,  feat_pcd, feat_feat, patch_coord, patch_feat, K)
+                view, updated_3d, mask,  fine_R, fine_t, inl = refiner(matched_2d, matched_3d,  matched_3d_feature ,view,  feat_pcd, feat_feat, patch_coord, patch_feat, K)
 
                 rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
                     
@@ -134,6 +135,10 @@ def localize_set(model_path, views, args, feat_pc):
                 #print(f"Fine Translation {i} Error: {transError_fine} cm")
                 
                 matched_3d = updated_3d
+                matched_2d = matched_2d[mask]
+                matched_3d_feature = matched_3d_feature[mask]
+                patch_coord = patch_coord[mask]
+                patch_feat = patch_feat[mask]
 
                 
             print(f"Fine Rotation Error: {rotError_fine} deg")

@@ -320,7 +320,7 @@ def get_query_coord_from_index(idx_tensor,coords_tensor, dim=2):
     safe_idx_expanded = safe_idx.unsqueeze(-1)  # [B, K, 1]
 
     # Step 3: Gather coordinates along dim=1 using the prepared indices
-    # coords_tensor shape: [B, 64, 2] → 从 dim=1 上索引
+    # coords_tensor shape: [B, 64, 2]
     gathered_coords = torch.gather(coords_tensor, dim=1, index=safe_idx_expanded.expand(-1, -1, dim))  # [B, K, 2]
 
     # Step 4: Zero out coordinates at positions corresponding to original -1 indices
@@ -416,10 +416,9 @@ def optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, que
                 
     
     return fine_R, fine_t, inl
-    
+"""
 def optimize_3D(X_3D, x_2d, full_proj, steps=100):
-    """ Optimize the 3D position
-    """
+
     N = X_3D.shape[0]
     x_2d = torch.tensor(x_2d).cuda()
     # Construct homogeneous coordinates [X, Y, Z, 1]
@@ -435,6 +434,35 @@ def optimize_3D(X_3D, x_2d, full_proj, steps=100):
         loss.backward()
         optimizer.step()
     return X_3D[:, :3]
+"""
+def get_updated_3d_indice(query_kp, render_kp,projected_points, device= 'cuda'):
+    """
+    query_kp : tensor [N, 2]
+    render_kp: tensor [N, 2]
+    """
+    # Find the middle coordinate
+    query_kp, render_kp = query_kp.to(device), render_kp.to(device)
+    midpoints = (query_kp + render_kp)/2
+    
+    # Get the index for each midpoints
+    diff = midpoints[:, None, :] - projected_points[None, :, :]  # pairwise differences
+
+    dists = (diff ** 2).sum(dim=2)  # shape [N, M]
+
+    nearest_indices = torch.argmin(dists, dim=1)  # shape [N]
+    
+    return nearest_indices.cpu().numpy()
+
+def optimize_3D(matched_2d, matched_3d_proj, all_project_pts):
+    # numpy --> tensor only for matched_2d 
+    matched_2d = torch.tensor(matched_2d)
+    
+    # Update the 3D point position due to the midpoint
+    matches = get_updated_3d_indice(matched_2d, matched_3d_proj[:,:2], all_project_pts[:,:2])
+    
+    return all_project_pts[:,2:][matches]
+    
+    
 
 
 def refiner(matched_2d, matched_3d, matched_3d_feature, view, feat_pcd, feat_feat, query_neigbor_pts, query_neigbor_feats,K):
@@ -482,10 +510,12 @@ def refiner(matched_2d, matched_3d, matched_3d_feature, view, feat_pcd, feat_fea
        Version 2 : No Optimize 3D position
     """
     # Refine the 3D position
-    updated_3D = optimize_3D(matched_3d, matched_2d, full_proj_matrix)
+    updated_3D = optimize_3D(matched_2d[mask], matched_3d_proj, pixel_pc)
     #updated_3D = matched_3d
+
     
-    return view, updated_3D, updated_R, updated_t, inl
+    return view, updated_3D, mask,  updated_R, updated_t, inl
+
 
 
 
