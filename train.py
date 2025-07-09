@@ -124,15 +124,15 @@ def training(dataset, opt, pipe,  saving_iterations, debug_from):
         """
         SFM Feature learning
         
-        """ 
-        
+        """        
         # Generate the sampling coordinates in [480, 640]
         render_coord =  sample_random_points(render_feature_map.shape[1],render_feature_map.shape[2], cell_size=8, device="cuda")
-        
+
+       
         # Sample the feature according to the coordinates
         render_map = render_feature_map.clone().detach()
         render_feat = sample_features(render_map, render_coord)
-
+        
         # Get the depth map and For each pixel in query image, find its coordinate in 3DGS      
         depth_map = render_pkg["depth"] 
         render_keypoints_3d = getGTXYZ(viewpoint_cam.projection_matrix, viewpoint_cam.world_view_transform, render_coord, depth_map)
