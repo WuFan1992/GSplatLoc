@@ -51,6 +51,8 @@ def localize_set(model_path, views, args, feat_pc):
         refine_tErr = []
         inliers = []
         list_ratio = []
+        coarse_time = []
+        fine_time = []
 
         xfeat = XFeat(top_k=4096)
         
@@ -58,10 +60,9 @@ def localize_set(model_path, views, args, feat_pc):
         feat_pcd = torch.tensor(feat_pc.get_xyz).to("cuda")
         feat_feat = torch.tensor(feat_pc.get_semantic_feature.squeeze(-1)).to("cuda")
         
-        start = time.time()
     
         for _, view in enumerate(tqdm(views, desc="Rendering progress")):
-                              
+
             # Get test image 
             try:
                 image = Image.open(view.image_path) 
@@ -81,24 +82,36 @@ def localize_set(model_path, views, args, feat_pc):
             # Define intrinsic matrix
             K = getIntrinsic(view, img_width, img_height)
 
-
             # Find initial pose prior via 2D-3D matching
-            
+            start_time_c = time.time()
             matched_2d, matched_3d, matched_3d_feature = find_2d3d_correspondences(
                     gt_keypoints,
                     gt_feature,
                     feat_pcd,
                     feat_feat
             )
-                
+
+               
             # get the coarse pose 
+            """
             _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
                                                   K, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
                                                   iterationsCount=args.ransac_iters
                                             )
+            """
+            _, R, t, inl = cv2.solvePnPRansac(matched_3d, matched_2d, 
+                                                  K, 
+                                                  distCoeffs=np.zeros((4, 1)),
+                                                  confidence=0.99999,
+                                                  iterationsCount=100000,
+                                                  reprojectionError=12.0
+                                            )
             
+            
+            end_time_c = time.time()
+            coarse_time.append(end_time_c-start_time_c)
             
             R, _ = cv2.Rodrigues(R) 
                 
@@ -107,59 +120,67 @@ def localize_set(model_path, views, args, feat_pc):
                 
             # Calculate the rotation and translation errors using existing function
             rotError, transError = calculate_pose_errors(gt_R, gt_t, R.T, t)
-            coarse_ratio = len(inl)/len(matched_3d)
-            # Print the errors
-            print(f"Coarse Rotation Error: {rotError} deg")
-            print(f"Coarse Translation Error: {transError} cm")
+            if inl is not None:
+                coarse_ratio = len(inl)/len(matched_3d)
+                # Print the errors
+                print(f"Coarse Rotation Error: {rotError} deg")
+                print(f"Coarse Translation Error: {transError} cm")
                 
-            rotError_fine =0
-            transError_fine = 0
+                rotError_fine =0
+                transError_fine = 0
                 
-            # Extract 8x8 patch feature
-            gt_feature_map = xfeat.get_descriptors(gt_im[None])[0]
+                # Extract 8x8 patch feature
+                gt_feature_map = xfeat.get_descriptors(gt_im[None])[0]
 
-            feature_map = F.interpolate(gt_feature_map.unsqueeze(0), size=(img_height, img_width), mode='bilinear', align_corners=True).squeeze(0) #640x480 
+                feature_map = F.interpolate(gt_feature_map.unsqueeze(0), size=(img_height, img_width), mode='bilinear', align_corners=True).squeeze(0) #640x480 
                 
-            patch_feat, patch_coord = extract_patch_features_with_coords(torch.tensor(matched_2d).cuda(), feature_map)
-            patch_feat = F.normalize(patch_feat, dim=2)
+                patch_feat, patch_coord = extract_patch_features_with_coords(torch.tensor(matched_2d).cuda(), feature_map)
+                patch_feat = F.normalize(patch_feat, dim=2)
             
    
-            view.update_RT(R.T, t[:,0])
+                view.update_RT(R.T, t[:,0])
+            
+                start_time_f = time.time()
                 
-            for i in range(25):
-                view, updated_3d, mask,  fine_R, fine_t, inl = refiner(matched_2d, matched_3d,  matched_3d_feature ,view,  feat_pcd, feat_feat, patch_coord, patch_feat, K)
+                for i in range(25):
+                    view, updated_3d, mask,  fine_R, fine_t, inl = refiner(matched_2d, matched_3d,  matched_3d_feature ,view,  feat_pcd, feat_feat, patch_coord, patch_feat, K)
+          
 
-                rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
+                    rotError_fine, transError_fine = calculate_pose_errors(gt_R, gt_t, fine_R.T, fine_t)
                     
-                #print(f"Fine Rotation {i} Error: {rotError_fine} deg")
-                #print(f"Fine Translation {i} Error: {transError_fine} cm")
+                    print(f"Fine Rotation {i} Error: {rotError_fine} deg")
+                    print(f"Fine Translation {i} Error: {transError_fine} cm")
                 
-                matched_3d = updated_3d
-                matched_2d = matched_2d[mask]
-                matched_3d_feature = matched_3d_feature[mask]
-                patch_coord = patch_coord[mask]
-                patch_feat = patch_feat[mask]
+                    matched_3d = updated_3d
+                    matched_2d = matched_2d[mask]
+                    matched_3d_feature = matched_3d_feature[mask]
+                    patch_coord = patch_coord[mask]
+                    patch_feat = patch_feat[mask]
 
+                    end_time_f = time.time()
                 
-            print(f"Fine Rotation Error: {rotError_fine} deg")
-            print(f"Fine Translation Error: {transError_fine} cm")
+                print(f"Fine Rotation Error: {rotError_fine} deg")
+                print(f"Fine Translation Error: {transError_fine} cm")
                
                 
-            if inl is not None:
-                inliers.append(len(inl))
-                prior_rErr.append(rotError)
-                prior_tErr.append(transError)
-                list_ratio.append(coarse_ratio)
-                refine_rErr.append(rotError_fine)
-                refine_tErr.append(transError_fine)
-                print("mean coar trans - rot, mean fine trans - rot =  ", np.mean(prior_tErr), np.mean(prior_rErr), np.mean(refine_tErr) , np.mean(refine_rErr))
+                if inl is not None:
+                    inliers.append(len(inl))
+                    prior_rErr.append(rotError)
+                    prior_tErr.append(transError)
+                    list_ratio.append(coarse_ratio)
+                    refine_rErr.append(rotError_fine)
+                    refine_tErr.append(transError_fine)
+                    fine_time.append((end_time_f-start_time_f)/25)
+                    print("mean coar trans - rot, mean fine trans - rot =  ", np.mean(prior_tErr), np.mean(prior_rErr), np.mean(refine_tErr) , np.mean(refine_rErr))
             
         err_mean_rot =  np.mean(prior_rErr)
         err_mean_trans = np.mean(prior_tErr)
         mean_inliers = np.mean(inliers)
         mean_ratio = np.mean(list_ratio) 
         err_mean_refine_rot = np.mean(refine_rErr)
-        err_mean_refine_trans = np.mean(refine_tErr) 
+        err_mean_refine_trans = np.mean(refine_tErr)
+        mean_c_time = np.mean(coarse_time) 
+        mean_f_time = np.mean(fine_time)
 
         print(f"Rotation Average Error: {err_mean_rot} deg ")
         print(f"Translation Average Error: {err_mean_trans} cm ")
@@ -167,6 +188,9 @@ def localize_set(model_path, views, args, feat_pc):
         print(f"Translation Fine Average Error: {err_mean_refine_trans} cm ")  
         print(f"Mean inliers : {mean_inliers}  ")
         print(f"Mean ratio : {mean_ratio}  ")
+        print(f"Mean coarse time : {mean_c_time} ")
+        print(f"Mean fine time : {mean_f_time}  ")
+        
         log_errors(model_path, "test", prior_rErr, prior_tErr, "coarse")
         log_errors(model_path, "test", refine_rErr, refine_tErr, f"refine")
 

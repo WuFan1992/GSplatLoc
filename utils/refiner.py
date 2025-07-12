@@ -35,76 +35,46 @@ Introduction:
     cloest points and then randomly select 32 to have its feature 
 
 """
-def interpolate_features_and_coords_8x8(
-    A_coord,     # [N, 2]
-    A_feat,      # [N, 64]
-    A_3d,        # [N, 3]
-    B,           # [M, 2]
-    radius=4.0,  # 半径4，范围8x8
-    grid_size=8  # 分辨率8x8
-):
-    device = A_coord.device
-    N, C = A_feat.shape
-    M = B.shape[0]
-    
-    # 计算每个B点到所有A点的距离，并筛选半径内的点
-    B_exp = B.unsqueeze(1)       # [M,1,2]
-    A_exp = A_coord.unsqueeze(0) # [1,N,2]
-    
-    dist = torch.norm(A_exp - B_exp, dim=2) # [M,N]
-    mask = dist <= radius            # [M,N] bool
-    
-    # 初始化输出特征图和3D坐标
-    output_feat = torch.zeros((M, C, grid_size, grid_size), device=device)
-    output_coord_3d = torch.zeros((M, grid_size, grid_size, 3), device=device)
-    
-    # 构建采样网格
-    linspace = torch.linspace(-radius, radius, grid_size, device=device)
-    grid_x, grid_y = torch.meshgrid(linspace, linspace, indexing='ij') # [8,8]
-    grid_points = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)  # [64, 2]
-    
-    for i in range(M):
-        center = B[i]
-        idxs = torch.nonzero(mask[i], as_tuple=False).squeeze(1)
-        if idxs.numel() == 0:
-            continue
-        
-        points = A_coord[idxs]      # [K, 2]
-        feats = A_feat[idxs]        # [K, 64]
-        coords_3d = A_3d[idxs]      # [K, 3]
-        print("coords_3d = ", coords_3d.shape)
-        
-        rel_points = points - center  # [K, 2]
-        
-        # 计算网格点到A点的距离，做高斯权重
-        dist_mat = torch.cdist(grid_points, rel_points.unsqueeze(0))[0]  # [64, K]
-        sigma = radius / 4
-        
-        weights = torch.exp(- (dist_mat ** 2) / (2 * sigma ** 2))  # [64, K]
-        weights_sum = weights.sum(dim=1, keepdim=True) + 1e-8
-        weights_norm = weights / weights_sum
-        
-        # 加权求和得到特征和3D坐标
-        interp_feat = weights_norm @ feats  # [64, 64]
-        interp_3d = weights_norm @ coords_3d  # [64, 3]
-        
-        interp_feat = interp_feat.T.reshape(C, grid_size, grid_size)
-        interp_3d = interp_3d.reshape(grid_size, grid_size, 3)
-        
 
-        output_feat[i] = interp_feat
-        output_coord_3d[i] = interp_3d
-        
-        
-    # [M, 64, 8, 8] → [M * 64, 64]
-    output_feat = output_feat.view(M, C, -1)  # C=64，flatten 8x8 → 64
-    output_feat = output_feat.permute(0, 2, 1)  # [M, 64 (位置数), 64 (特征维度)]
-    
-    # [M, 8, 8, 3] → [M * 64, 3]
-    output_coord_3d = output_coord_3d.view(M, -1, 3)
-    
-    return output_feat, output_coord_3d
 
+def angular_uniformity_score_batch(center, neighbors, num_sectors=8):
+    """
+    批量计算角度均匀度得分。
+    center: [B, 2]
+    neighbors: [B, K, 2]
+    返回: [B]，每个batch的均匀度得分（0~1，越接近1越均匀）
+    """
+    B, K, _ = neighbors.shape
+
+    vec = neighbors - center.unsqueeze(1)  # [B, K, 2]
+    angles = torch.atan2(vec[..., 1], vec[..., 0])  # [B, K], 范围[-pi, pi]
+    angles = (angles + 2 * torch.pi) % (2 * torch.pi)  # 转到[0, 2pi]
+
+    sector_size = 2 * torch.pi / num_sectors
+    sector_idx = (angles / sector_size).long()  # [B, K]
+
+    # 统计每个batch每个扇区的点数
+    counts = torch.zeros(B, num_sectors, device=center.device)
+    counts = counts.scatter_add_(1, sector_idx, torch.ones_like(sector_idx, dtype=torch.float))
+
+    probs = counts / (counts.sum(dim=1, keepdim=True) + 1e-8)  # [B, S]
+
+    entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1)  # [B]
+    max_entropy = torch.log(torch.tensor(float(num_sectors), device=center.device))
+    norm_entropy = entropy / max_entropy  # [B], 范围0~1
+
+    return norm_entropy  # 返回张量，方便批量使用
+
+
+def uniformity_valid(matched_3d_proj, pixel_pc_2d, pixel_pc_3d, pixel_feat, query_neigbor_feat):
+    
+    proj_neigbor_2d, proj_neigbor_feats, proj_neigbor_3d = knn_norand(matched_3d_proj, pixel_pc_2d, pixel_pc_3d, pixel_feat) 
+    
+    score = angular_uniformity_score_batch(matched_3d_proj, proj_neigbor_2d)
+    mask = score > 0.5
+    
+    return proj_neigbor_2d[mask], proj_neigbor_feats[mask], proj_neigbor_3d[mask], query_neigbor_feat[mask]
+       
 
 
 
@@ -431,27 +401,29 @@ def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, 
           q_pixel: updated query neigbor matched corrdinate
           proj_3d: update sfm neigbor matched coordinate 
     
-    """    
+    """
+    
+    query_neigbor_feats = query_neigbor_feats[mask]
+    query_neigbor_pts = query_neigbor_pts[mask] 
      # Get the neigbor pixel of projected 3D matched points
     """
      Two version :
        Version 1 : choose 64 closet point and randomly select 32 cloest point
        Version 2 : Directly choose 32 cloest point
-       Version 3:  creat a 8x8 neighbour for each matching pixel. Get the projected points inside this neighbour and interpelation its feature with limited 
-                   projected points to get a dense feature windows, the same things to interpelation the 3D position  
+       Version 3:  
     """
     #_, proj_neigbor_feats, proj_neigbor_3d =  knn(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
     #_, proj_neigbor_feats, proj_neigbor_3d =  knn_norand(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
-    proj_neigbor_feats, proj_neigbor_3d = interpolate_features_and_coords_8x8(pixel_pc[:,:2], pixel_feat, pixel_pc[:,:3], matched_3d_proj[:,:2])
-    
+    _ , proj_neigbor_feats, proj_neigbor_3d, query_neigbor_feats = uniformity_valid(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat,  query_neigbor_feats)
 
+    
     # Normalize the feature 
     proj_neigbor_feats = F.normalize(proj_neigbor_feats, dim=2) 
     
 
     # Get the correlation matrix
     fine_corr_matrix = torch.matmul(
-            proj_neigbor_feats, query_neigbor_feats[mask].transpose(-2, -1)
+            proj_neigbor_feats, query_neigbor_feats.transpose(-2, -1)
         )
     
     fine_corr_matrix = dual_softmax(
@@ -465,7 +437,7 @@ def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, 
     
     
     # Get the query image 2D pixel coords
-    q_pixel = get_query_coord_from_index(L_B2A, query_neigbor_pts[mask])  # [N, K, 2]
+    q_pixel = get_query_coord_from_index(L_B2A, query_neigbor_pts)  # [N, K, 2]
     
     # Get the proj mid neigbor pixel
     proj_3d = get_query_coord_from_index(L_A2B, proj_neigbor_3d, dim=3) # [N,K,3]
