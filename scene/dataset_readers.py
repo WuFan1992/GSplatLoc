@@ -164,6 +164,14 @@ def readColmapSceneInfo(path, eval):
         with open(os.path.join(path, "dataset_test.txt")) as f:
             test_images = f.readlines()
             test_images = [x.split(" ")[0] for x in test_images if x[0] != '#']
+    elif os.path.exists(os.path.join(path, "rgb.txt")):
+        # TUM
+        with open(os.path.join(path, "rgb.txt")) as f:
+            lines = f.readlines()
+            rgb_paths = [line.strip().split()[-1].replace('rgb/', '') 
+             for line in lines if line.strip().endswith('.png') and 'rgb/' in line]
+            test_images = rgb_paths[::8]
+            reading_dir = "rgb"
     else:
         test_images = []
 
