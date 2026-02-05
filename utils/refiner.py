@@ -4,6 +4,12 @@ import torch.nn.functional as F
 import numpy as np
 import torch.optim as optim
 import cv2
+import torch.nn as nn
+
+##############
+import time 
+import utils.global_var as global_var
+
 
 """
 Introduction: 
@@ -35,50 +41,6 @@ Introduction:
     cloest points and then randomly select 32 to have its feature 
 
 """
-
-
-def angular_uniformity_score_batch(center, neighbors, num_sectors=8):
-    """
-    批量计算角度均匀度得分。
-    center: [B, 2]
-    neighbors: [B, K, 2]
-    返回: [B]，每个batch的均匀度得分（0~1，越接近1越均匀）
-    """
-    B, K, _ = neighbors.shape
-
-    vec = neighbors - center.unsqueeze(1)  # [B, K, 2]
-    angles = torch.atan2(vec[..., 1], vec[..., 0])  # [B, K], 范围[-pi, pi]
-    angles = (angles + 2 * torch.pi) % (2 * torch.pi)  # 转到[0, 2pi]
-
-    sector_size = 2 * torch.pi / num_sectors
-    sector_idx = (angles / sector_size).long()  # [B, K]
-
-    # 统计每个batch每个扇区的点数
-    counts = torch.zeros(B, num_sectors, device=center.device)
-    counts = counts.scatter_add_(1, sector_idx, torch.ones_like(sector_idx, dtype=torch.float))
-
-    probs = counts / (counts.sum(dim=1, keepdim=True) + 1e-8)  # [B, S]
-
-    entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1)  # [B]
-    max_entropy = torch.log(torch.tensor(float(num_sectors), device=center.device))
-    norm_entropy = entropy / max_entropy  # [B], 范围0~1
-
-    return norm_entropy  # 返回张量，方便批量使用
-
-
-def uniformity_valid(matched_3d_proj, pixel_pc_2d, pixel_pc_3d, pixel_feat, query_neigbor_feat):
-    
-    proj_neigbor_2d, proj_neigbor_feats, proj_neigbor_3d = knn_norand(matched_3d_proj, pixel_pc_2d, pixel_pc_3d, pixel_feat) 
-    
-    score = angular_uniformity_score_batch(matched_3d_proj, proj_neigbor_2d)
-    mask = score > 0.5
-    
-    return proj_neigbor_2d[mask], proj_neigbor_feats[mask], proj_neigbor_3d[mask], query_neigbor_feat[mask]
-       
-
-
-
-
 
 """
 Full projection Function
@@ -123,7 +85,7 @@ def project_and_filter(points_3d, points_feat,P, W, H):
     points_homogeneous = torch.cat([points_3d, ones], dim=1)  # [N, 4]
     
     # Project 3D points into pixel space 
-    x,y = fullproj(points_homogeneous, P, 640, 480)
+    x,y = fullproj(points_homogeneous, P, 1920, 1080) # 640 480 for 7 scenes
     
     # Keep only the projected pixel that is inside the pixel space ：x ∈ (0, 640), y ∈ (0, 480)
     mask = (x > 0) & (x < W) & (y > 0) & (y < H)
@@ -246,7 +208,18 @@ def knn_norand(A, B, B_3D, F, k=32):
     
     return B_coords_selected, B_feats_selected, B_3D_selected
 
-
+def mnn_match_stdloc(corr_matrix, thr=-1):
+    """
+    corr_matrix: torch.Tensor, shape (B, N, M)
+    """
+    mask = corr_matrix > thr
+    mask = (
+        mask
+        * (corr_matrix == corr_matrix.max(dim=-1, keepdim=True)[0])
+        * (corr_matrix == corr_matrix.max(dim=-2, keepdim=True)[0])
+    )
+    b_ids, i_ids, j_ids = torch.where(mask)
+    return b_ids.squeeze(), i_ids.squeeze(), j_ids.squeeze()
 
 def mnn_match(corr_matrix):
     """
@@ -413,10 +386,8 @@ def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, 
        Version 3:  
     """
     #_, proj_neigbor_feats, proj_neigbor_3d =  knn(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
-    #_, proj_neigbor_feats, proj_neigbor_3d =  knn_norand(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
-    _ , proj_neigbor_feats, proj_neigbor_3d, query_neigbor_feats = uniformity_valid(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat,  query_neigbor_feats)
-
-    
+    _, proj_neigbor_feats, proj_neigbor_3d =  knn_norand(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat)
+    #proj_neigbor_feats, proj_neigbor_3d, query_neigbor_feats, query_neigbor_pts= uniformity_valid(matched_3d_proj[:,:2], pixel_pc[:,:2], pixel_pc[:,2:], pixel_feat, query_neigbor_pts, query_neigbor_feats)
     # Normalize the feature 
     proj_neigbor_feats = F.normalize(proj_neigbor_feats, dim=2) 
     
@@ -431,11 +402,14 @@ def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, 
         )
 
 
+    """ 
     L_A2B, L_B2A, _ = mnn_match(
             fine_corr_matrix
         )
     
+
     
+
     # Get the query image 2D pixel coords
     q_pixel = get_query_coord_from_index(L_B2A, query_neigbor_pts)  # [N, K, 2]
     
@@ -447,28 +421,37 @@ def get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat,  query_neigbor_pts, 
     q_pixel = remove_invalid(q_pixel)
     proj_3d = remove_invalid(proj_3d)
     
+    """
+    f_b_ids, f_i_ids, f_j_ids = mnn_match_stdloc(
+            fine_corr_matrix
+        )
+    q_pixel = query_neigbor_pts[f_b_ids, f_j_ids]
+    proj_3d = proj_neigbor_3d[f_b_ids, f_i_ids]
     
     return  q_pixel, proj_3d
 
-def optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask, K):
+def optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask, K, view):
     """ Optimize the Pose
     """
     
     # Get the update 2D 3D pairs using its neighbor pixel
     pnp_2d, pnp_3d = get_refine_2d3d(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask)
     
+
     # Update the Pose
-    _, fine_R, fine_t, inl = cv2.solvePnPRansac(pnp_3d.cpu().numpy(), pnp_2d.cpu().numpy(), 
+    if (len(pnp_2d) > 8):
+        _, fine_R, fine_t, inl = cv2.solvePnPRansac(pnp_3d.cpu().numpy(), pnp_2d.cpu().numpy(), 
                                                   K, 
                                                   distCoeffs=None, 
                                                   flags=cv2.SOLVEPNP_ITERATIVE, 
-                                                  iterationsCount=20000
-                                                  )
-                
-    
+                                                  iterationsCount=1000)
+    else:
+        fine_R, fine_t = view.R, np.expand_dims(view.T, axis=1)
+        inl = 0
     return fine_R, fine_t, inl
+
 """
-def optimize_3D(X_3D, x_2d, full_proj, steps=100):
+def optimize_3D_old(X_3D, x_2d, full_proj, steps=500):
 
     N = X_3D.shape[0]
     x_2d = torch.tensor(x_2d).cuda()
@@ -477,15 +460,115 @@ def optimize_3D(X_3D, x_2d, full_proj, steps=100):
     X_3D = torch.cat([X_3D, ones], dim=1)  # [N, 4]
     X_3D.requires_grad = True
     optimizer = optim.NAdam([X_3D], lr=1e-2)
-    for _ in range(steps):
+    for i in range(steps):
         optimizer.zero_grad()
         x, y = fullproj(X_3D, full_proj,640, 480)
         x_proj = torch.cat([x.unsqueeze(1), y.unsqueeze(1)], dim=1)
         loss = ((x_proj - x_2d) ** 2).mean()
         loss.backward()
         optimizer.step()
+        
+        if (i + 1) % 50 == 0 or i == 0:
+            print("points_3d = ", X_3D)
     return X_3D[:, :3]
 """
+#############################################
+#############################################
+
+########## Implementation of classical gradient descend #####################
+def gradient_descent(full_proj, init_3d, gt_2d, lr=1e-2, iterations=500, optimizer_type='adam'):
+    """
+   Optimize 3D points to make their projections approximate the Ground Truth 2D points.
+
+Parameters:
+
+    K: Camera intrinsic matrix (3x3)
+    R: Rotation matrix (3x3)
+    t: Translation vector (3,)
+    init_3d: Initial 3D points (N x 3)
+    gt_2d: Ground Truth 2D points (N x 2)
+    lr: Learning rate
+    iterations: Number of iterations
+    optimizer_type: 'adam' or 'sgd'
+    """
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    gt_2d = torch.tensor(gt_2d).to(device).float()
+
+    loss_fn = nn.MSELoss()
+    
+    N = init_3d.shape[0]
+    points_3d = init_3d.clone().detach().to(device)
+    # Initialize as an optimizable variable
+    points_3d.requires_grad = True
+    
+    if optimizer_type == 'adam':
+        optimizer = optim.Adam([points_3d], lr=lr)
+    else:
+        optimizer = optim.SGD([points_3d], lr=lr)
+
+    for i in range(iterations):
+        optimizer.zero_grad()
+
+        # 3D-to-2D projection
+        ones = torch.ones((N, 1), dtype=points_3d.dtype, device=points_3d.device)
+        points_3d_homo = torch.cat([points_3d, ones], dim=1)
+        x,y  = fullproj(points_3d_homo, full_proj, 640, 480 )  # (N x 2)
+        proj_2d = torch.cat([x.unsqueeze(1), y.unsqueeze(1)], dim=1)
+        
+        # Compute reprojection error
+        loss = loss_fn(proj_2d, gt_2d)
+
+        loss.backward()
+        optimizer.step()
+
+    
+    return points_3d.detach()
+
+def find_nearest_points(query_points, cloud_points):
+    """
+    Compute the nearest neighbor of each query point in cloud_points using PyTorch on CUDA.
+
+    Parameters:
+        query_points: (N, 3) torch.Tensor
+        cloud_points: (M, 3) torch.Tensor
+    Returns:
+         nearest_points: (N, 3) torch.Tensor, the nearest points in cloud_points corresponding to each query point
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Ensure the tensors are on CUDA
+    query_points = query_points.to(device)  # [N, 3]
+    cloud_points = cloud_points.to(device)  # [M, 3]
+    
+    # Expand dimensions and broadcast to compute pairwise distances
+    # result shape: [N, M, 3]
+    diff = query_points[:, None, :] - cloud_points[None, :, :]  # broqdcast [N, M, 3]
+    
+    dists = torch.sum(diff ** 2, dim=2)  # [N, M] Squared Euclidean distance
+    
+    #Find the index of the minimum distance 
+    indices = torch.argmin(dists, dim=1)  # [N]
+    
+    # Get the coordinates of the nearest points
+    nearest_points = cloud_points[indices]  # [N, 3]
+    
+    return nearest_points
+
+def optimize_3d_gradient_descend(full_proj, init_3d, gt_2d, cloud_pts):
+    
+    updated_3d = gradient_descent(full_proj, init_3d, gt_2d)
+
+    
+    updated_3d_in_pc = find_nearest_points(updated_3d, cloud_pts )
+    
+    return updated_3d_in_pc
+
+
+#####################################
+#######################################
+
+
 def get_updated_3d_indice(query_kp, render_kp,projected_points, device= 'cuda'):
     """
     query_kp : tensor [N, 2]
@@ -534,18 +617,21 @@ def refiner(matched_2d, matched_3d, matched_3d_feature, view, feat_pcd, feat_fea
     full_proj_matrix = view.full_proj_transform
     
     # Project the matched 3D into pixel space 
-    # only the pixel that is inside the image
+    # only the pixel that is inside the image 
+    # Here matched_3d_feature is useless but we keep it for the reason compatibility with the next project_and_filter
     matched_3d, matched_3d_feature = torch.tensor(matched_3d).cuda().float(), torch.tensor(matched_3d_feature).cuda().float()
-    mask, matched_3d_proj, _ = project_and_filter(matched_3d, matched_3d_feature, full_proj_matrix, 640, 480)
+    mask, matched_3d_proj, _ = project_and_filter(matched_3d, matched_3d_feature, full_proj_matrix, 1920, 1080) # 640 480 for 7 scene
     mask = mask.cpu().numpy()
     
     # Project the whole point cloud to 2D pixel space and keep 
     # only the pixel that is inside the image
-    _, pixel_pc, pixel_feat =  project_and_filter(feat_pcd, feat_feat, full_proj_matrix, 640, 480)
+    _, pixel_pc, pixel_feat =  project_and_filter(feat_pcd, feat_feat, full_proj_matrix, 1920, 1080) # 640 480 for 7 scene
     
     
-    # Refine the pose using neighbor feature 
-    updated_R, updated_t, inl = optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask, K)
+    # Refine the pose using neighbor feature
+    start_time = time.time() 
+    updated_R, updated_t, inl = optimize_pose(matched_3d_proj,  pixel_pc, pixel_feat, query_neigbor_pts, query_neigbor_feats, mask, K, view)
+    global_var.time_optim_pose.append(time.time()-start_time)
     
     # Update the Pose
     updated_R, _ = cv2.Rodrigues(updated_R)  
@@ -554,13 +640,17 @@ def refiner(matched_2d, matched_3d, matched_3d_feature, view, feat_pcd, feat_fea
     full_proj_matrix = view.full_proj_transform
     
     """
-     Two version :
+     Three version :
        Version 1 : Optimize 3D position
        Version 2 : No Optimize 3D position
+       Version 3 :  Classical Grandient descend
     """
     # Refine the 3D position
+    start_time = time.time()
     #updated_3D = optimize_3D(matched_2d[mask], matched_3d_proj, pixel_pc)
+    global_var.time_optim_3D.append(time.time()-start_time)
     updated_3D = matched_3d[mask]
+    #updated_3D = optimize_3d_gradient_descend(full_proj_matrix, matched_3d[mask], matched_2d[mask], feat_pcd)
 
     
     return view, updated_3D, mask,  updated_R, updated_t, inl
