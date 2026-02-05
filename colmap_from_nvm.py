@@ -320,7 +320,7 @@ def read_nvm_model(nvm_path, width=1920, height=1080, skip_points=False):
             xys=xys,
             point3D_ids=point3D_ids)
         images[image_id] = image
-        print("images[0] = ", images[0])
+
 
         camera_model = CAMERA_MODEL_NAMES['SIMPLE_RADIAL']
         px, py = width / 2., height /2.
